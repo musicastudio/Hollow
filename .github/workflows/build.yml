@@ -1,0 +1,31 @@
+# Builds every format on every push: Windows x64 and 32-bit, macOS universal. FSVR's skin lives in the
+# FSVR repository, not this one, so CI builds FSVR with an empty GUI, which proves the formats compile
+# and link.
+name: build
+on: [push, pull_request, workflow_dispatch]
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    strategy:
+      matrix:
+        arch: [x64, Win32]
+    steps:
+      - uses: actions/checkout@v4
+      - run: cmake -S . -B build -G "Visual Studio 17 2022" -A ${{ matrix.arch }}
+      - run: cmake --build build --config Release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hollow-windows-${{ matrix.arch }}
+          path: build/out
+
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - run: cmake -S . -B build -G Xcode
+      - run: cmake --build build --config Release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hollow-macos
+          path: build/out

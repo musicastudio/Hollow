@@ -1,0 +1,8 @@
+build/
+__pycache__/
+
+# Local preview servers for the Claude desktop app (machine-specific paths)
+.claude/launch.json
+
+# Builds collected by format (hollow.py)
+bin/

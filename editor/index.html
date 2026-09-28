@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Hollow skin editor</title>
+<link rel="stylesheet" href="editor.css">
+<script type="module" src="editor.js"></script>
+</head>
+<body>
+<header id="bar">
+  <button id="b-skin" title="Open another skin">Skin</button>
+  <span class="sep"></span>
+  <button id="b-save" title="Save changed files (Ctrl+S)">Save</button>
+  <button id="b-undo" class="edit-only" title="Undo (Ctrl+Z)">Undo</button>
+  <button id="b-redo" class="edit-only" title="Redo (Ctrl+Y)">Redo</button>
+  <button id="b-play" title="Play mode: try the view as the runtime would show it (P)">Play</button>
+  <span class="sep"></span>
+  <button id="b-back" title="Back to the previous view (Alt+Left)">&#9664;</button>
+  <span id="crumb"></span>
+  <span class="sep"></span>
+  <label>Zoom <select id="zoom"><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option><option>6</option></select></label>
+  <button id="b-fit" title="Largest zoom that fits (F)">Fit</button>
+  <label title="Show hidden widgets faintly (H)"><input type="checkbox" id="show-hidden" checked> hidden</label>
+  <label title="Outline every widget (B)"><input type="checkbox" id="show-boxes"> boxes</label>
+  <span class="grow"></span>
+  <span class="find"><input id="find" type="search" placeholder="Find text, widgets, params... (Ctrl+F)" spellcheck="false" autocomplete="off"><div id="find-results" hidden></div></span>
+  <span id="dirty"></span>
+  <button id="b-help" title="Keyboard shortcuts">?</button>
+</header>
+
+<nav id="left">
+  <div class="tabs">
+    <button data-tab="views" class="on">Views</button>
+    <button data-tab="images">Images</button>
+    <button data-tab="params">Params</button>
+    <button data-tab="check">Check</button>
+  </div>
+  <section id="tab-views" class="tab">
+    <div class="tools">
+      <input id="views-filter" type="search" placeholder="Filter views">
+    </div>
+    <div class="tools edit-only">
+      <button id="b-view-new">New</button>
+      <button id="b-view-rename">Rename</button>
+      <button id="b-view-delete">Delete</button>
+      <button id="b-page-add" title="New view sized like the pages embed, plus a navigation button">Add page</button>
+    </div>
+    <div id="views-list" class="list"></div>
+  </section>
+  <section id="tab-images" class="tab" hidden>
+    <div class="tools">
+      <input id="images-filter" type="search" placeholder="Filter images and fonts">
+      <button id="b-image-import" class="edit-only" title="Import PNG files (or drop them on this panel)">Import</button>
+    </div>
+    <div id="images-list" class="list"></div>
+  </section>
+  <section id="tab-params" class="tab" hidden>
+    <div class="tools">
+      <input id="params-filter" type="search" placeholder="Filter params">
+      <select id="params-host" title="Host params, internal ones (host: false, hidden from hosts), or all"><option value="">all</option><option value="host">host</option><option value="internal">internal</option></select>
+      <button id="b-param-add" class="edit-only">Add</button>
+    </div>
+    <div id="params-list" class="list"></div>
+  </section>
+  <section id="tab-check" class="tab" hidden>
+    <div class="tools"><button id="b-check">Check again</button><span id="check-count"></span></div>
+    <div id="check-list" class="list"></div>
+  </section>
+</nav>
+
+<main id="centre">
+  <div id="palette" class="edit-only"></div>
+  <div id="stage">
+    <div id="corner"></div>
+    <canvas id="ruler-x"></canvas>
+    <canvas id="ruler-y"></canvas>
+    <div id="viewport">
+      <canvas id="cv"></canvas>
+      <div id="scroller"><div id="spacer"></div></div>
+      <div id="busy" hidden><span id="busy-text"></span><div class="bar"><div id="busy-bar"></div></div></div>
+    </div>
+  </div>
+</main>
+
+<aside id="right"><div id="inspector"></div></aside>
+
+<footer id="foot"><span id="pos"></span><span id="selinfo"></span><span id="msg"></span></footer>
+
+<dialog id="dlg"></dialog>
+<dialog id="menu-dlg"></dialog>
+<dialog id="help">
+  <h3>Keyboard and mouse</h3>
+  <table>
+    <tr><td>Ctrl+S</td><td>Save changed files</td></tr>
+    <tr><td>Ctrl+Z, Ctrl+Y / Ctrl+Shift+Z</td><td>Undo, redo</td></tr>
+    <tr><td>Click, Shift+click</td><td>Select, add to or remove from the selection</td></tr>
+    <tr><td>Alt+click</td><td>Cycle through overlapping widgets, hidden ones included (a click picks what shows)</td></tr>
+    <tr><td>Drag on empty space, Ctrl+drag</td><td>Marquee select (widgets fully inside)</td></tr>
+    <tr><td>Drag, handles</td><td>Move, resize (snaps to other widgets; hold Alt to disable)</td></tr>
+    <tr><td>Arrows, Shift+arrows</td><td>Move 1 px, 10 px</td></tr>
+    <tr><td>Ctrl+arrows</td><td>Resize 1 px (Shift: 10 px)</td></tr>
+    <tr><td>Ctrl+C, Ctrl+X, Ctrl+V</td><td>Copy, cut, paste (also between views)</td></tr>
+    <tr><td>Ctrl+D, Delete</td><td>Duplicate, delete</td></tr>
+    <tr><td>Ctrl+A, Esc</td><td>Select all, select none</td></tr>
+    <tr><td>PageUp, PageDown</td><td>Layer up, down</td></tr>
+    <tr><td>Ctrl+], Ctrl+[</td><td>Forward, backward within the layer (file order)</td></tr>
+    <tr><td>Ctrl+F</td><td>Find a text, menu item, widget, param, view, image or font anywhere in the skin; Enter opens it</td></tr>
+    <tr><td>Double-click</td><td>Inside an embed: open that view with the widget under the pointer selected (outlined in blue on hover). A text: edit it in place. A dropdown: its menu</td></tr>
+    <tr><td>Enter</td><td>Open the view of the selected embed or goto button</td></tr>
+    <tr><td>Alt+Left</td><td>Back to the previous view</td></tr>
+    <tr><td>1 .. 6, +, -, F, Ctrl+wheel</td><td>Zoom, fit</td></tr>
+    <tr><td>H, B</td><td>Show hidden widgets, outline all widgets</td></tr>
+    <tr><td>P</td><td>Play mode on and off: the widgets work as in the runtime, editing is off</td></tr>
+    <tr><td>Play: drag, Shift+drag, wheel</td><td>Move dials and numbers, finely; scroll a scrolling embed</td></tr>
+    <tr><td>Play: double-click</td><td>Reset a dial or number, or edit an editable one (Enter commits, Escape cancels)</td></tr>
+    <tr><td>Play: arrows, Enter, Esc</td><td>Move in an open menu, choose, close</td></tr>
+  </table>
+  <form method="dialog"><button>Close</button></form>
+</dialog>
+<input type="file" id="file" hidden>
+<datalist id="dl-images"></datalist>
+<datalist id="dl-fonts"></datalist>
+<datalist id="dl-views"></datalist>
+<datalist id="dl-params"></datalist>
+<datalist id="dl-stacks"></datalist>
+<datalist id="dl-widgets"></datalist>
+<datalist id="dl-groups"></datalist>
+<datalist id="dl-vars"></datalist>
+<datalist id="dl-tables"></datalist>
+<datalist id="dl-midi"><option>bend</option><option>cc1</option><option>cc2</option><option>cc7</option><option>cc11</option><option>cc64</option></datalist>
+<datalist id="dl-kinds"><option>pad</option><option>morph_pad</option><option>envelope</option><option>fx_chain</option><option>spectrum</option><option>piano</option></datalist>
+</body>
+</html>
