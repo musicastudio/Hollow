@@ -79,6 +79,15 @@ function(hollow_add_plugin target)
       AUV2_SUBTYPE_CODE "${P_AU_SUBTYPE}"
       AUV2_INSTRUMENT_TYPE "${P_AU_TYPE}"
       ${standalone})
+    # Visual Studio 18's MSVC 14.51 makes <experimental/coroutine>, which clap-wrapper's Windows
+    # standalone reaches through C++/WinRT, a hard error unless this is defined.
+    if(MSVC)
+      foreach(t ${target}_standalone ${target}_standalone-clap-wrapper-standalone-lib)
+        if(TARGET ${t})
+          target_compile_definitions(${t} PRIVATE _SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS)
+        endif()
+      endforeach()
+    endif()
   endif()
 
   if("VST2" IN_LIST HOLLOW_FORMATS)   # with the DXi on 32-bit Windows, a .vst bundle on macOS
