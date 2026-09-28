@@ -2,11 +2,11 @@
 
 Hollow is a small, portable framework for audio plug-ins whose GUI is data: a skin folder of JSON layouts and PNG artwork, drawn by a software renderer that is identical on every host and platform. One CMake call builds a product in every format, and a browser-based editor lays out its GUI.
 
-Its product is **FSVR**, the GUI of the [FSVR](../FSVR) plug-in, a software Yamaha FS1R. The skin lives in the FSVR repository beside this one, in `plugin/skin`, and everything here points at it: the editor opens it by default, the launcher runs the FSVR standalone on it, and `plugins/fsvr` embeds it in a silent shell for trying the skin in a host. FSVR's own plug-in is the same skin with the engine behind it; its `docs/editor.md` records what the skin does and why.
+Its product is **FSVR**, the GUI of the [FSVR](https://github.com/musicastudio/FSVR) plug-in, a software Yamaha FS1R. The skin lives in the FSVR repository beside this one, in `plugin/skin`, and everything here points at it: the editor opens it by default, the launcher runs the FSVR standalone on it, and `plugins/fsvr` embeds it in a silent shell for trying the skin in a host. FSVR's own plug-in is the same skin with the engine behind it; its `docs/editor.md` records what the skin does and why.
 
 ## Quick start
 
-Everything runs from the root folder, with the FSVR repository checked out beside it (`../FSVR`). On Windows double-click `hollow.cmd`: a menu of every step, in order, with the next one marked. On macOS run `./hollow.command` (or `python3 hollow.py`). The other launchers each do one step:
+Everything runs from the root folder, with [the FSVR repository](https://github.com/musicastudio/FSVR) checked out beside it (`../FSVR`). On Windows double-click `hollow.cmd`: a menu of every step, in order, with the next one marked. On macOS run `./hollow.command` (or `python3 hollow.py`). The other launchers each do one step:
 
 | Launcher | What it does |
 |---|---|
@@ -98,3 +98,7 @@ Copy `plugins/fsvr` to `plugins/<name>`, change `plugin.cpp` (`pluginInfo()` and
 ## Status
 
 Verified on Windows: every format builds for x64 and 32-bit; clap-validator passes with 0 failures, the Steinberg VST3 validator passes 47 of 47, scratch hosts load and drive the VST2 (both bitnesses) and the DXi filter; scripted tests cover the editor window's input, text entry, menus, scrolling, conditions, MIDI from the GUI and from the host, MIDI learn, automation, scaling, live reload and state. Not yet built on macOS: the CMake and code for the Mac bundles, the AU and the Cocoa view are written but have not been compiled (`.github/workflows/build.yml` builds them on a macOS runner once the repository is on GitHub).
+
+## Licence
+
+GPLv3, the same as FSVR ([LICENSE](LICENSE)). The vendored DirectShow BaseClasses (MIT) and stb (MIT or public domain) keep their own notices in `framework/third_party`.

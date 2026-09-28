@@ -284,6 +284,13 @@ void platformOpenUrl(const std::string& url) {
         ShellExecuteW(nullptr, L"open", wide(url).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
 
+// clap-wrapper's standalone window opens its settings from its system menu; the command's id is 0
+// (Menu::Identifier::AudioMidiSettings in windows_standalone.h).
+const bool kAudioSettings = true;
+void platformAudioSettings(PlatformWindow* w) {
+    PostMessageW(GetAncestor(w->hwnd, GA_ROOT), WM_SYSCOMMAND, 0, 0);
+}
+
 // The common dialogs: a filter of "Name (*.a;*.b)" then "*.a;*.b" per type, a save's extension the first type's first.
 bool platformFileDialog(PlatformWindow* w, bool save, const std::string& title, const Vars& types, const std::string& name, std::string& path) {
     std::wstring filter, ext;

@@ -459,6 +459,24 @@ void Gui::setScroll(Node& n, int i, int pixels) {
     if (s.child) saveUi();
 }
 
+// An embed with scroll "reveal" centres the first radio button inside it that is on (a chooser's
+// current choice), after an action changes pages or vars.
+void Gui::reveal(Node& n) {
+    for (size_t i = 0; n.view && i < n.w.size(); ++i) {
+        Inst& s = n.w[i];
+        if (!s.child) continue;
+        const Node& c = *s.child;
+        for (size_t k = 0; n.view->widgets[i].scroll.reveal && c.view && k < c.w.size(); ++k) {
+            const Action& a = c.view->widgets[k].action;
+            if (a.type == Action::Value && c.w[k].param >= 0 && state_.get(c.w[k].param) == a.amount) {
+                setScroll(n, (int)i, c.w[k].r.y + c.w[k].r.h / 2 - rectOf(n, (int)i).h / 2);
+                break;
+            }
+        }
+        reveal(*s.child);
+    }
+}
+
 // The innermost embed or list under the point whose content is taller than it.
 Hit Gui::scroller(Node& n, int x, int y) {
     if (!n.view || !n.clip.contains(x, y)) return {};
@@ -1191,6 +1209,9 @@ void Gui::runAction(Node& n, int i, const Action& action) {
     case Action::Url:
         platformOpenUrl(a.target);
         return;
+    case Action::Standalone:   // "settings": the app's audio and MIDI settings
+        if (window && standalone()) platformAudioSettings(window);
+        return;
     case Action::File: {   // a native dialog; the chosen path goes to text data, for the product to act on
         std::string path;
         if (!window || !platformFileDialog(window, a.target == "save", a.title, a.vars, withData(n, a.nameKey), path)) return;
@@ -1209,14 +1230,6 @@ void Gui::runAction(Node& n, int i, const Action& action) {
         return;
     case Action::Data:   // text data keys set to the given texts (a curve reset, a name)
         for (auto& kv : a.vars) state_.setData(subst(n, kv.first), kv.second);
-        return;
-    case Action::Value:   // a radio button: its param to this value
-        if (n.w[i].param >= 0) {
-            Hit h{&n, i, gen_};
-            begin(h);
-            setPlain(h, a.amount);
-            end();
-        }
         return;
     case Action::Step:
         if (n.w[i].param >= 0) {
@@ -1237,6 +1250,15 @@ void Gui::runAction(Node& n, int i, const Action& action) {
         inst(t).toggled = true;
         break;
     }
+    case Action::Value:   // a radio button: its param to this value, then its goto if it has one
+        if (n.w[i].param >= 0) {
+            Hit h{&n, i, gen_};
+            begin(h);
+            setPlain(h, a.amount);
+            end();
+        }
+        if (a.stack.empty()) return;
+        [[fallthrough]];
     case Action::Goto: {
         int k;
         Node* p = findEmbed(root_, a.stack, &k);
@@ -1247,6 +1269,7 @@ void Gui::runAction(Node& n, int i, const Action& action) {
     }
     conds(root_, false);
     relayout();
+    reveal(root_);
     saveUi();
 }
 
@@ -1977,6 +2000,7 @@ void Gui::itemMenu(const Hit& h, const std::vector<Item>& items, Rect at, const 
     std::function<std::vector<MenuEntry>(const std::vector<Item>&)> build = [&](const std::vector<Item>& its) {
         std::vector<MenuEntry> out;
         for (auto& it : its) {
+            if (it.action.type == Action::Standalone && !standalone()) continue;   // only the app has its settings
             MenuEntry e;
             e.label = it.label;
             e.separator = it.separator;

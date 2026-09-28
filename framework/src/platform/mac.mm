@@ -283,6 +283,12 @@ void platformOpenUrl(const std::string& url) {
     if (u) [[NSWorkspace sharedWorkspace] openURL:u];
 }
 
+// clap-wrapper's standalone app delegate answers its Audio Settings menu item with this action.
+const bool kAudioSettings = true;
+void platformAudioSettings(PlatformWindow*) {
+    [NSApp sendAction:NSSelectorFromString(@"openAudioSettingsWindow:") to:nil from:nil];
+}
+
 // NSOpenPanel / NSSavePanel, run modal; the types' extensions become the allowed ones.
 bool platformFileDialog(PlatformWindow*, bool save, const std::string& title, const Vars& types, const std::string& name, std::string& path) {
     NSMutableArray* exts = [NSMutableArray array];

@@ -301,6 +301,10 @@ void platformOpenUrl(const std::string& url) {
     if (url.compare(0, 7, "http://") == 0 || url.compare(0, 8, "https://") == 0) spawn({"xdg-open", url}, nullptr);
 }
 
+// clap-wrapper's Linux standalone has no settings window.
+const bool kAudioSettings = false;
+void platformAudioSettings(PlatformWindow*) {}
+
 // zenity, else kdialog: the file dialogs every desktop has one of. False when neither is installed.
 bool platformFileDialog(PlatformWindow*, bool save, const std::string& title, const Vars& types, const std::string& name, std::string& path) {
     std::vector<std::string> z = {"zenity", "--file-selection", "--title=" + title};

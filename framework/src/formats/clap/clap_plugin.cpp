@@ -108,6 +108,8 @@ struct Plugin final : Editor::Host {
     void edit(size_t i, double plain) override { push({CLAP_EVENT_PARAM_VALUE, (uint32_t)i, plain}); }
     void endEdit(size_t i) override { push({CLAP_EVENT_PARAM_GESTURE_END, (uint32_t)i, 0}); }
     bool resize(int w, int h) override { return hostGui && hostGui->request_resize(host, (uint32_t)w, (uint32_t)h); }
+    // clap-wrapper's standalone names itself so (standalone_host.cpp, host_get_name).
+    bool standalone() const override { return host->name && std::strcmp(host->name, "CLAP-Wrapper-As-Standalone") == 0; }
 
     void push(const GuiEvent& e) {
         if (state->hostSlot(e.index) < 0) return;   // host: false params never reach the host

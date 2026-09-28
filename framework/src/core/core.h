@@ -104,7 +104,7 @@ struct Text {
     int align = 0, valign = 0;   // 0 left/top, 1 center/middle, 2 right/bottom
 };
 struct Action {
-    enum Type { None, Goto, Set, Toggle, Url, Step, MidiMap, Presets, Sequence, Data, File, Value } type = None;
+    enum Type { None, Goto, Set, Toggle, Url, Step, MidiMap, Presets, Sequence, Data, File, Value, Standalone } type = None;
     std::string target, stack;   // Goto: view and stack; Toggle: widget name; Url: the URL; MidiMap: remove / reset;
                                  // Presets: the data table
     Vars vars;                   // Goto and Set; Data: text key (may hold {vars}) to text
@@ -137,7 +137,7 @@ struct Cond {                    // showIf / enableIf
 struct Scroll {
     int track = -1, thumb = -1;  // images
     int width = 0;               // 0 = the embed does not scroll
-    bool always = false, follow = false;
+    bool always = false, follow = false, reveal = false;
 };
 struct FixedRow {                // midi_map list rows: a param (its CC or -1), or a label whose CC cell is ccParam
     std::string param, label, ccParam;
@@ -349,6 +349,10 @@ extern const bool kNativeMenus;   // false: the platform has none, and a "native
 void platformTip(PlatformWindow* w, const std::string& text);        // tooltip of the whole window, "" = none
 void platformFocus(PlatformWindow* w, bool on);   // take the keyboard (text entry, menus, lists), or hand it back
 void platformOpenUrl(const std::string& url);
+// The standalone app's own audio and MIDI settings window (clap-wrapper's); kAudioSettings is false
+// where the platform's standalone has none.
+extern const bool kAudioSettings;
+void platformAudioSettings(PlatformWindow* w);
 // A native open or save dialog; types: (name, "ext;ext"). False when cancelled; path in UTF-8.
 bool platformFileDialog(PlatformWindow* w, bool save, const std::string& title, const Vars& types, const std::string& name, std::string& path);
 
@@ -435,6 +439,7 @@ public:
     Rect rectOf(const Node& n, int i) const;
     bool pressed(const Hit& h) const { return live(press_) && press_ == h; }
     bool live(const Hit& h) const { return h.node && h.gen == gen_; }
+    bool standalone() const { return kAudioSettings && host_ && host_->standalone(); }   // the app's settings are ours to open
     std::string subst(const Node& n, const std::string& s) const;   // {var} and {var:upper}
     int paramOf(const Hit& h, const std::string& id) const;         // a param id with {vars}, -1 if unknown
     double plain(const Node& n, int i, int which = 0) const;        // bound widgets read State, others their local value
@@ -530,6 +535,7 @@ private:
     Rect thumb(const Node& n, int i) const;
     int contentHeight(const Node& n, int i) const;
     void setScroll(Node& n, int i, int pixels);
+    void reveal(Node& n);                        // embeds with scroll "reveal": their lit radio button in view
     Hit scroller(Node& n, int x, int y);
     const std::string* lookup(const Node& n, const std::string& key) const;
     void paint(Canvas& c, Node& n);

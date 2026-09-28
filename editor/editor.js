@@ -1547,7 +1547,8 @@ const STATUS = ['status', 'bool', { title: 'Shows "Name: value" of the param und
 const SOURCE = ['Runtime value', [['source', 'enum', { options: ['cpu', 'midi_in', 'modified', 'voices'], title: 'A value the runtime knows (the editor shows 0, or what Play mode knows)' }],
   ['format', 'str', { placeholder: '%.0f', when: w => w.source === 'cpu' || w.source === 'voices' }]]];
 const SCROLL = list => ['Scroll', [['scroll.track', 'image', { label: 'track' }], ['scroll.thumb', 'image', { label: 'thumb' }], ['scroll.width', 'int', { label: 'width', def: 12 }],
-  ['scroll.always', 'bool', { label: 'always' }], ...(list ? [] : [['scroll.follow', 'bool', { label: 'follow', title: 'Keeps a widget growing in an animated flow in view' }]])]];
+  ['scroll.always', 'bool', { label: 'always' }], ...(list ? [] : [['scroll.follow', 'bool', { label: 'follow', title: 'Keeps a widget growing in an animated flow in view' }],
+    ['scroll.reveal', 'bool', { label: 'reveal', title: 'Scrolls the radio button inside that is on to the middle after a goto, set or toggle' }]])]];
 const BUTTON = ['Button', [['toggle', 'bool'], ['press', 'enum', { options: ['down', 'momentary', 'repeat', 'up'], def: 'down' }],
   ['hoverTiles', 'bool'], ['pressedTiles', 'bool'], ['disabledTile', 'bool'], ['pressOffset', 'nums', { labels: ['dx', 'dy'] }]]];
 const SPECS = {

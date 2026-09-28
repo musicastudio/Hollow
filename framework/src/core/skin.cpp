@@ -479,10 +479,14 @@ struct Loader {
 
     static Action action(const Json& a) {
         Action r;
-        if (a.has("goto")) { r.type = Action::Goto; r.target = a["goto"].str(); r.stack = a["stack"].str(); r.vars = vars(a["vars"]); }
+        if (a.has("value")) {   // a radio button, and with a goto a chooser that then shows that view
+            r.type = Action::Value; r.amount = a["value"].num(); r.target = a["goto"].str(); r.stack = a["stack"].str(); r.vars = vars(a["vars"]);
+        }
+        else if (a.has("goto")) { r.type = Action::Goto; r.target = a["goto"].str(); r.stack = a["stack"].str(); r.vars = vars(a["vars"]); }
         else if (a.has("set")) { r.type = Action::Set; r.vars = vars(a["set"]); }
         else if (a.has("toggle")) { r.type = Action::Toggle; r.target = a["toggle"].str(); }
         else if (a.has("url")) { r.type = Action::Url; r.target = a["url"].str(); }
+        else if (a.has("standalone")) { r.type = Action::Standalone; r.target = a["standalone"].str(); }
         else if (a.has("file")) {
             r.type = Action::File;
             r.target = a["file"].str();
@@ -492,7 +496,6 @@ struct Loader {
             for (auto& m : a["types"].members) r.vars.push_back({m.first, m.second.str()});
         }
         else if (a.has("step")) { r.type = Action::Step; r.amount = a["step"].num(); }
-        else if (a.has("value")) { r.type = Action::Value; r.amount = a["value"].num(); }
         else if (a.has("midi_map")) { r.type = Action::MidiMap; r.target = a["midi_map"].str(); }
         else if (a.has("data")) { r.type = Action::Data; r.vars = vars(a["data"]); }
         else if (a.has("presets")) {
@@ -648,6 +651,7 @@ struct Loader {
             w.scroll.width = std::max(1, sc["width"].integer(skin.dp(12)));
             w.scroll.always = sc["always"].flag();
             w.scroll.follow = sc["follow"].flag();
+            w.scroll.reveal = sc["reveal"].flag();
         }
         if (w.kind == Kind::Custom && w.customKind.empty()) w.customKind = j["kind"].str();
         if (w.kind == Kind::Custom) w.ops = findKind(w.customKind);

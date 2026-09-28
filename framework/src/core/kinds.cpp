@@ -484,10 +484,10 @@ struct WiresState : KindState {
 
 static std::vector<double> wireInputs(Gui& g, const Hit& h) {   // 9 x 11 amounts, then the 9 on switches
     const Json& j = g.wid(h).json;
-    if (j.has("algorithm")) {   // fixed algorithms: the wires of the one the param picks, from a table
+    if (j.has("algorithm") || j.has("number")) {   // fixed algorithms: the wires of the one the param (or number) picks, from a table
         std::vector<double> v(9 * 11 + 9, 0.0);
-        int p = g.paramOf(h, j["algorithm"].str());
-        int a = p >= 0 ? (int)std::lround(g.state().get(p)) - j["first"].integer(1) : 0;
+        int first = j["first"].integer(1), p = j.has("number") ? -1 : g.paramOf(h, j["algorithm"].str());
+        int a = j.has("number") ? j["number"].integer() - first : p >= 0 ? (int)std::lround(g.state().get(p)) - first : 0;
         const Json& t = g.skin().table(j["table"].str("algorithms"))[(size_t)std::max(a, 0)];
         auto set = [&](int src, int dst) {   // operators 1..8
             if (src >= 1 && src <= 8 && dst >= 1 && dst <= 10) v[(size_t)((src - 1) * 11 + dst - 1)] = 1;
@@ -511,100 +511,83 @@ static std::vector<double> wireInputs(Gui& g, const Hit& h) {   // 9 x 11 amount
     return v;
 }
 
-// Lines in matrix-local design coordinates (scaled by the skin's density as they are drawn): cell
-// (i, j) of source i and destination j sits at (11 + 28 i, 26 + 28 j) (15 higher on the diagonal),
-// out at y 278, pan at 293. A source's lines are light while it is on and grey while off; the output
-// bus is always light.
+// Text centred on its ink rather than on its cells, which carry blank rows and a spacing column.
+static void inkCentred(Canvas& c, const Font& f, const std::string& s, Rect b) {
+    int top = f.height, bottom = -1, left = b.w, right = -1, x = 0;
+    for (unsigned char ch : s) {   // single-byte text only (operator numbers)
+        for (int y = 0; y < f.height; ++y)
+            for (int i = 0; i < f.w[ch]; ++i)
+                if (f.img.px[(size_t)(f.top + y) * (size_t)f.img.w + (size_t)(f.x[ch] + i)] >> 24) {
+                    top = std::min(top, y), bottom = std::max(bottom, y);
+                    left = std::min(left, x + i), right = std::max(right, x + i);
+                }
+        x += f.w[ch];
+    }
+    if (bottom < 0) return;
+    drawText(c, f, s, {b.x + (b.w - (right - left + 1)) / 2 - left, b.y + (b.h - (bottom - top + 1)) / 2 - top, x, f.height}, 0, 0, false);
+}
+
+// In matrix-local design units (scaled by the skin's density as they are drawn), operator box n
+// (0-based, the n-th source and destination) is centred on (25 + 28 n, 32.67 + 28 n), where the
+// operator art's visible box is, 16.67 x 13.33 ("boxSize" changes it); a source's feedback amount
+// sits above it, centred at y 18 + 28 n, and its output amount on the bus, y 284.67. A wire leaves a
+// box straight down or up its column to the destination's row, then runs along the row to the box's
+// edge with an arrow, unbroken: the amount tags of a skin draw over it. Carriers run down into the
+// bus, which starts at the first of them. A source's lines are light while it is on and grey while
+// off; the bus is always light. "scale" shrinks the whole drawing (a thumbnail), and "box" draws the
+// boxes in that colour, numbered in the text font if there is one, where no operator art sits over.
 static void wiresDraw(Gui& g, Canvas& c, const Hit& h, Rect r) {
     WiresState& st = kindState<WiresState>(g, h);
     st.sig = wireInputs(g, h);
-    const Skin& sk = g.skin();
-    const int k = sk.lw();
+    const Widget& w = g.wid(h);
+    const double s = g.skin().density * w.json["scale"].num(1);
+    auto D = [&](double v) { return (int)std::lround(v * s); };   // the skin's dp() at scale 1
+    const Json& size = w.json["boxSize"];
+    const double hw = size[0].num(16.67) / 2, hh = size[1].num(13.33) / 2, busY = 284.67, busEnd = 268;
+    const int k = std::max(1, D(1)), head = std::max(D(2), std::clamp(D(2 * hh) / 2, 2, 3));   // no taller than a box
     auto nz = [&](int i, int j) { return st.sig[(size_t)(i * 11 + j)] != 0; };
-    auto cell = [&](int i, int j, int& x, int& y) {
-        x = 11 + 28 * i;
-        y = j < 9 ? 26 + 28 * j - (i == j ? 15 : 0) : j == 9 ? 278 : 293;
-    };
+    auto cx = [&](int n) { return 25.0 + 28 * n; };
+    auto cy = [&](int n) { return 32.67 + 28 * n; };
+    auto X = [&](double u) { return r.x + D(u) - k / 2; };   // a line centred on unit u
+    auto Y = [&](double u) { return r.y + D(u) - k / 2; };
     const uint32_t light = 0xffdcdee4, grey = 0xff808080;
     uint32_t col = light;
-    auto H = [&](int x, int y, int n) {   // n design pixels from (x, y): from the scaled start to the scaled end
-        if (n > 0) fillRect(c, {r.x + sk.dp(x), r.y + sk.dp(y), std::max(sk.dp(x + n) - sk.dp(x), k), k}, col);
+    auto hl = [&](int x0, int x1, int y) { fillRect(c, {std::min(x0, x1), y, std::abs(x1 - x0) + k, k}, col); };
+    auto vl = [&](int x, int y0, int y1) { fillRect(c, {x, std::min(y0, y1), k, std::abs(y1 - y0) + k}, col); };
+    auto arrow = [&](int from, int tip, int y, int dir) {   // along y to the tip pixel, pointing dir (1 right, -1 left)
+        hl(from, tip - (dir > 0 ? k - 1 : 0), y);
+        for (int d = 0; d < head; ++d) fillRect(c, {tip - dir * d, y - 1 - d, 1, k + 2 + 2 * d}, col);
     };
-    auto V = [&](int x, int y, int n) {
-        if (n > 0) fillRect(c, {r.x + sk.dp(x), r.y + sk.dp(y), k, std::max(sk.dp(y + n) - sk.dp(y), k)}, col);
-    };
-    for (int i = 0; i < 9; ++i)   // the output bus, from the first source with an output amount
+    for (int i = 0; i < 9; ++i)   // the bus, from the first carrier
         if (nz(i, 9)) {
-            int x, y;
-            cell(i, 9, x, y);
-            H(x + 22, y + 6, 246 - x);
-            V(265, y + 4, 5);
-            V(266, y + 5, 3);
+            arrow(X(cx(i)), r.x + D(busEnd) - 1, Y(busY), 1);
             break;
         }
     for (int i = 0; i < 9; ++i)
         for (int j = 0; j < 11; ++j) {
-            if (!nz(i, j)) continue;
-            int x0, y0;
-            cell(i, j, x0, y0);
+            if (!nz(i, j) || j == 10) continue;   // pan draws no wire
             col = st.sig[(size_t)(99 + i)] != 0 ? light : grey;
-            if (j < 9 && j < i) {   // destination above: down to the source box, left to the destination box
-                int y = y0 + 11;
-                for (int k = 0; k < i - j; ++k) {
-                    int row = j + 1 + k;
-                    bool last = row == i;
-                    int n = nz(i, row) ? (last ? 15 : 28) - 11 : (last ? 17 : 28);
-                    V(x0 + 13, y, n);
-                    y += 28;
-                }
-                for (int k = 0; k < i - j; ++k) {
-                    int column = i - 1 - k, xc = x0 - 28 * (k + 1);
-                    if (column == j) {
-                        V(xc + 25, y0 + 4, 5);
-                        V(xc + 24, y0 + 5, 3);
-                        H(xc + 22, y0 + 6, 11);
-                    } else {
-                        int n = nz(column, j) ? 11 : 28;
-                        H(xc + 33 - n, y0 + 6, n);
-                    }
-                }
-            } else if (j < 9 && j > i) {   // destination below: up to the source box, right to the destination box
-                int y = y0;
-                for (int k = 0; k < j - i; ++k) {
-                    int row = j - 1 - k, n = nz(i, row) || row == i ? 17 : 28;
-                    V(x0 + 13, y - n, n);
-                    y -= 28;
-                }
-                for (int k = 0; k < j - i; ++k) {
-                    int column = i + 1 + k, n = nz(column, j) ? 11 : 28;
-                    if (column == j) {
-                        V(x0 + 30 + 28 * k, y0 + 4, 5);
-                        V(x0 + 31 + 28 * k, y0 + 5, 3);
-                        n = 11;
-                    }
-                    H(x0 + 22 + 28 * k, y0 + 6, n);
-                }
-            } else if (j < 9) {   // feedback: a loop around the right side of the box
-                H(x0 + 22, y0 + 6, 6);
-                V(x0 + 28, y0 + 6, 16);
-                H(x0 + 22, y0 + 21, 6);
-                V(x0 + 13, y0 + 12, 3);
-                V(x0 + 25, y0 + 19, 5);
-                V(x0 + 24, y0 + 20, 3);
-            } else if (j == 9) {   // to the output bus: up the column to the source box
-                int n = nz(i, 8) || i == 8 ? 13 : 29;
-                V(x0 + 13, y0 - n, n);
-                if (i < 8) {
-                    int y = y0 - 19;
-                    for (int row = 7; row >= i; --row) {
-                        n = nz(i, row) || row == i ? 24 : 33;
-                        if (row == i) n += 7;
-                        V(x0 + 13, y - n, n);
-                        y -= 28;
-                    }
-                }
-            }   // pan (j == 10) draws no wire
+            int x = X(cx(i));
+            if (j == 9) {
+                vl(x, Y(cy(i)), Y(busY));
+            } else if (j != i) {   // down or up to the destination's row, then along it into the box
+                vl(x, Y(cy(i)), Y(cy(j)));
+                if (j > i) arrow(x, r.x + D(cx(j) - hw) - 1, Y(cy(j)), 1);
+                else arrow(x, r.x + D(cx(j) + hw), Y(cy(j)), -1);
+            } else {   // feedback: up through the amount, round the right side and back in
+                double top = 18 + 28 * i, side = cx(i) + std::max(14.0, hw + 7);
+                vl(x, Y(cy(i)), Y(top));
+                hl(x, X(side), Y(top));
+                vl(X(side), Y(top), Y(cy(i)));
+                arrow(X(side), r.x + D(cx(i) + hw), Y(cy(i)), -1);
+            }
         }
+    if (!w.json.has("box")) return;
+    for (int i = 0; i < 8; ++i) {
+        Rect b{r.x + D(cx(i) - hw), r.y + D(cy(i) - hh), D(cx(i) + hw) - D(cx(i) - hw), D(cy(i) + hh) - D(cy(i) - hh)};
+        fillRect(c, b, colourField(w, "box", 0xff6b7070));
+        if (w.text.font >= 0) inkCentred(c, g.skin().fonts[w.text.font], std::to_string(i + 1), b);
+    }
 }
 
 static void wiresTick(Gui& g, const Hit& h, Rect r) {
