@@ -7,6 +7,8 @@
 #     [VENDOR "musica.studio"]             AU manufacturer name
 #     [AU_TYPE aumu|aufx] [AU_MANUFACTURER <4 chars>] [AU_SUBTYPE <4 chars>]
 #     [DXI_CLSID <uuid>]                   default: a name-based UUID of BUNDLE_ID
+#     [WINDOWS_ICON <file.ico>] [MACOS_ICON <file.icns>]   the standalone's icon: the .exe, its window
+#                                          and its shortcuts on Windows, the .app on macOS
 #     [BIN <dir>])                         also copy each format, as built, into <dir>/<format>
 #
 # Builds every format the platform has, limited to the list in HOLLOW_FORMATS:
@@ -19,7 +21,7 @@
 set(HOLLOW_FORMATS "CLAP;VST3;AUV2;STANDALONE;VST2;DXI" CACHE STRING "Formats to build, where the platform has them")
 
 function(hollow_add_plugin target)
-  cmake_parse_arguments(P "" "NAME;SKIN;BUNDLE_ID;VERSION;VENDOR;AU_TYPE;AU_MANUFACTURER;AU_SUBTYPE;DXI_CLSID;BIN" "SOURCES" ${ARGN})
+  cmake_parse_arguments(P "" "NAME;SKIN;BUNDLE_ID;VERSION;VENDOR;AU_TYPE;AU_MANUFACTURER;AU_SUBTYPE;DXI_CLSID;BIN;WINDOWS_ICON;MACOS_ICON" "SOURCES" ${ARGN})
   foreach(arg NAME SKIN BUNDLE_ID SOURCES)
     if(NOT P_${arg})
       message(FATAL_ERROR "hollow_add_plugin(${target}): ${arg} is required")
@@ -62,6 +64,12 @@ function(hollow_add_plugin target)
     set(standalone "")
     if("STANDALONE" IN_LIST HOLLOW_FORMATS)
       set(standalone STANDALONE_CONFIGURATIONS standalone "${P_NAME}" "${P_BUNDLE_ID}")
+      if(P_WINDOWS_ICON)
+        list(APPEND standalone STANDALONE_WINDOWS_ICON "${P_WINDOWS_ICON}")
+      endif()
+      if(P_MACOS_ICON)
+        list(APPEND standalone STANDALONE_MACOS_ICON "${P_MACOS_ICON}")
+      endif()
     endif()
     make_clapfirst_plugins(
       TARGET_NAME ${target}
@@ -79,6 +87,12 @@ function(hollow_add_plugin target)
       AUV2_SUBTYPE_CODE "${P_AU_SUBTYPE}"
       AUV2_INSTRUMENT_TYPE "${P_AU_TYPE}"
       ${standalone})
+    # clap-wrapper copies the .icns into the .app as Resources/Icon.icns but its Info.plist names no
+    # icon file, so the Finder would never show it.
+    if(APPLE AND P_MACOS_ICON AND TARGET ${target}_standalone)
+      add_custom_command(TARGET ${target}_standalone POST_BUILD
+        COMMAND plutil -replace CFBundleIconFile -string Icon "$<TARGET_FILE_DIR:${target}_standalone>/../Info.plist")
+    endif()
     # Visual Studio 18's MSVC 14.51 makes <experimental/coroutine>, which clap-wrapper's Windows
     # standalone reaches through C++/WinRT, a hard error unless this is defined.
     if(MSVC)

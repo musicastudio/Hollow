@@ -104,7 +104,7 @@ struct Text {
     int align = 0, valign = 0;   // 0 left/top, 1 center/middle, 2 right/bottom
 };
 struct Action {
-    enum Type { None, Goto, Set, Toggle, Url, Step, MidiMap, Presets, Sequence, Data, File, Value, Standalone } type = None;
+    enum Type { None, Goto, Set, Toggle, Url, Step, MidiMap, Presets, Sequence, Data, File, Value, Standalone, Scale } type = None;
     std::string target, stack;   // Goto: view and stack; Toggle: widget name; Url: the URL; MidiMap: remove / reset;
                                  // Presets: the data table
     Vars vars;                   // Goto and Set; Data: text key (may hold {vars}) to text
@@ -190,7 +190,7 @@ struct Widget {
     int pad[4] = {0, 0, 0, 0};   // left, top, right, bottom
     std::string key;             // textbox, custom: text data key (may hold {vars})
     bool editable = false, status = false, editOnClick = false;
-    enum Source { NoSource, Cpu, MidiIn, Modified, Voices, MidiMap, Scope, LevelL, LevelR } source = NoSource;
+    enum Source { NoSource, Cpu, MidiIn, Modified, Voices, MidiMap, Scope, LevelL, LevelR, Scale } source = NoSource;
     // button, dropdown, context menus
     bool toggle = false, hoverTiles = false, pressedTiles = false, disabledTile = false, captionFromItem = false;
     Press press = PressDown;
@@ -576,7 +576,7 @@ private:
     void dropdown(const Hit& h);
     void contextMenu(const Hit& h, int x, int y);
     void itemMenu(const Hit& h, const std::vector<Item>& items, Rect at, const std::string& style, bool current);
-    void scaleMenu(int x, int y);
+    void scaleMenu(Rect at);
     void openSkinned(size_t level, std::vector<MenuEntry> items, Rect at, bool below, const MenuStyle* st);
     void closeMenus(size_t from = 0);
     void pickMenu(int id);

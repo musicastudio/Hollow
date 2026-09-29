@@ -1021,6 +1021,7 @@ function playTree(ctx) {
 function sourceValue(ctx, w) {
   const st = ctx.st;
   if (w.source === 'cpu') return 0;
+  if (w.source === 'scale') return '1x';
   if (w.source === 'voices') return (st.press?.note != null ? 1 : 0) + st.notesIn.length;
   if (w.source === 'midi_in') return st.midiInAt != null && ctx.now - st.midiInAt < 200 ? 1 : 0;
   if (w.source === 'modified') return +(Object.entries(st.values).some(([id, v]) => { const p = ctx.pmap.get(id); return p && v !== (p.default ?? p.min ?? 0); })
@@ -1055,6 +1056,7 @@ function buildNode(ctx, view, owner, x, y, clip, vars, depth) {
     if (typeof w.source === 'string' && w.type !== 'list') {
       it.source = sourceValue(ctx, w);
       if (w.type !== 'button' && (w.source === 'cpu' || w.source === 'voices')) it.text = formatValue(w.format || '%.0f', it.source);
+      if (w.source === 'scale') it.text = it.source;
     }
     return it;
   });

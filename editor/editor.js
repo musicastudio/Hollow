@@ -1544,7 +1544,7 @@ const PAD = ['pad', 'nums', { labels: ['left', 'top', 'right', 'bottom'], def: [
 const RANGE = ['range', 'nums', { labels: ['min', 'max'] }];
 const MENU_AT = ['menuAt', 'nums', { labels: ['x', 'y'], title: 'The menu opens with its top-left at this point of the view' }];
 const STATUS = ['status', 'bool', { title: 'Shows "Name: value" of the param under the pointer' }];
-const SOURCE = ['Runtime value', [['source', 'enum', { options: ['cpu', 'midi_in', 'modified', 'voices'], title: 'A value the runtime knows (the editor shows 0, or what Play mode knows)' }],
+const SOURCE = ['Runtime value', [['source', 'enum', { options: ['cpu', 'midi_in', 'modified', 'voices', 'scale'], title: 'A value the runtime knows (the editor shows 0, or what Play mode knows)' }],
   ['format', 'str', { placeholder: '%.0f', when: w => w.source === 'cpu' || w.source === 'voices' }]]];
 const SCROLL = list => ['Scroll', [['scroll.track', 'image', { label: 'track' }], ['scroll.thumb', 'image', { label: 'thumb' }], ['scroll.width', 'int', { label: 'width', def: 12 }],
   ['scroll.always', 'bool', { label: 'always' }], ...(list ? [] : [['scroll.follow', 'bool', { label: 'follow', title: 'Keeps a widget growing in an animated flow in view' }],
@@ -1580,7 +1580,7 @@ const SPECS = {
     ['velocity', 'int', { placeholder: 'from the height', when: w => w.kind === 'piano' }], ['glide', 'bool', { def: true, when: w => w.kind === 'piano' }],
     ['keyImages', 'vars', { label: 'key images', when: w => w.kind === 'piano', placeholder: 'c=keyboard/c, black=..., top=...' }]]], FILL],
 };
-const ACTIONS = ['goto', 'set', 'toggle', 'url', 'step', 'sequence', 'presets', 'data', 'midi_map'];
+const ACTIONS = ['goto', 'set', 'toggle', 'url', 'step', 'sequence', 'presets', 'data', 'midi_map', 'scale'];
 const actionKind = w => ACTIONS.find(k => w?.action && typeof w.action === 'object' && k in w.action) || '';
 
 function actionSection(W, item) {
@@ -1591,7 +1591,7 @@ function actionSection(W, item) {
     const k = sel.value, t = W();
     if (!k) delete t.action;
     else t.action = k === 'goto' ? { goto: '', stack: embedNames().includes('pages') ? 'pages' : embedNames()[0] || 'pages' } : k === 'set' ? { set: {} } : k === 'step' ? { step: 0.01 }
-      : k === 'sequence' ? { sequence: 'insert', prefix: '', index: '', count: 1 } : k === 'presets' ? { presets: Object.keys(S.data)[0] || '', key: '', name: '' } : k === 'data' ? { data: {} } : k === 'midi_map' ? { midi_map: 'remove' } : { [k]: '' };
+      : k === 'sequence' ? { sequence: 'insert', prefix: '', index: '', count: 1 } : k === 'presets' ? { presets: Object.keys(S.data)[0] || '', key: '', name: '' } : k === 'data' ? { data: {} } : k === 'midi_map' ? { midi_map: 'remove' } : k === 'scale' ? { scale: 'menu' } : { [k]: '' };
     done();
   });
   out.push(row('kind', sel));

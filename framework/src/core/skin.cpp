@@ -487,6 +487,7 @@ struct Loader {
         else if (a.has("toggle")) { r.type = Action::Toggle; r.target = a["toggle"].str(); }
         else if (a.has("url")) { r.type = Action::Url; r.target = a["url"].str(); }
         else if (a.has("standalone")) { r.type = Action::Standalone; r.target = a["standalone"].str(); }
+        else if (a.has("scale")) r.type = Action::Scale;
         else if (a.has("file")) {
             r.type = Action::File;
             r.target = a["file"].str();
@@ -557,7 +558,7 @@ struct Loader {
         w.status = j["status"].flag();
         w.editOnClick = j["editOn"].str() == "click";
         static const std::map<std::string, Widget::Source> sources = {
-            {"cpu", Widget::Cpu}, {"midi_in", Widget::MidiIn}, {"modified", Widget::Modified}, {"voices", Widget::Voices}, {"midi_map", Widget::MidiMap},
+            {"cpu", Widget::Cpu}, {"midi_in", Widget::MidiIn}, {"modified", Widget::Modified}, {"voices", Widget::Voices}, {"scale", Widget::Scale}, {"midi_map", Widget::MidiMap},
             {"scope", Widget::Scope}, {"level_l", Widget::LevelL}, {"level_r", Widget::LevelR}};
         auto src = sources.find(j["source"].str());
         if (src != sources.end()) w.source = src->second;

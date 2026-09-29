@@ -52,7 +52,9 @@ hollow_add_plugin(my_synth
   VERSION 1.0.0
   VENDOR Example
   AU_MANUFACTURER Exmp                 # 4 characters, at least one upper case
-  AU_SUBTYPE MySy)                     # 4 characters
+  AU_SUBTYPE MySy                      # 4 characters
+  WINDOWS_ICON "${CMAKE_CURRENT_SOURCE_DIR}/icon.ico"   # optional: the standalone's .exe, window and shortcuts
+  MACOS_ICON "${CMAKE_CURRENT_SOURCE_DIR}/icon.icns")   # optional: the standalone .app's
 ```
 
 From another repository, vendor Hollow (a git submodule at `external/hollow`, for example) and write a top-level `CMakeLists.txt` like this:

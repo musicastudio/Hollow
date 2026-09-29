@@ -783,6 +783,7 @@ std::string Gui::sourceValue(const Widget& w) const {
     case Widget::MidiIn: return Clock::now() < midiUntil_ ? "1" : "0";
     case Widget::Modified: return state_.modified() ? "1" : "0";
     case Widget::Voices: return state_.voices() < 0 ? "" : formatInt(w.format.empty() ? "%d" : w.format, state_.voices());
+    case Widget::Scale: return std::to_string(scale_) + "x";
     default: return "";
     }
 }
@@ -791,7 +792,7 @@ std::string Gui::sourceValue(const Widget& w) const {
 std::string Gui::shownText(Node& n, int i) {
     const Widget& w = n.view->widgets[i];
     Inst& s = n.w[i];
-    if (w.source == Widget::Cpu || w.source == Widget::Voices) return s.data = sourceValue(w);
+    if (w.source == Widget::Cpu || w.source == Widget::Voices || w.source == Widget::Scale) return s.data = sourceValue(w);
     s.stored = !s.key.empty() && state_.hasData(s.key);
     s.data = s.stored ? state_.data(s.key) : std::string();
     if (w.status && !status_.empty()) return status_;
@@ -857,7 +858,7 @@ void Gui::paintWidget(Canvas& c, Node& n, int i, Rect r) {
     case Kind::Dropdown: {
         drawFill(c, w.fill, r, buttonTile(n, i));
         bool pressed = w.pressedTiles && live(press_) && press_ == Hit{&n, i};   // offset only with pressed tiles
-        std::string caption = w.source == Widget::Cpu || w.source == Widget::Voices ? sourceValue(w) : s.text;
+        std::string caption = w.source == Widget::Cpu || w.source == Widget::Voices || w.source == Widget::Scale ? sourceValue(w) : s.text;
         if (w.captionFromItem) {
             std::function<bool(const std::vector<Item>&)> find = [&](const std::vector<Item>& items) {
                 for (auto& it : items) {
@@ -1212,6 +1213,9 @@ void Gui::runAction(Node& n, int i, const Action& action) {
     case Action::Standalone:   // "settings": the app's audio and MIDI settings
         if (window && standalone()) platformAudioSettings(window);
         return;
+    case Action::Scale:   // the window scale menu, under the widget
+        scaleMenu(rectOf(n, i));
+        return;
     case Action::File: {   // a native dialog; the chosen path goes to text data, for the product to act on
         std::string path;
         if (!window || !platformFileDialog(window, a.target == "save", a.title, a.vars, withData(n, a.nameKey), path)) return;
@@ -1443,7 +1447,7 @@ void Gui::mouseDown(int x, int y, bool right, bool dbl, bool shift) {
         if (window && !wantsKeys()) platformFocus(window, false);
     }
     if (right) {   // context menus open on the release
-        if (!h) scaleMenu(x, y);
+        if (!h) scaleMenu({x, y, 0, 0});
         else if (wid(h).kind == Kind::Custom && wid(h).ops && wid(h).ops->right) wid(h).ops->right(*this, h, rectOf(*h.node, h.i), x, y, shift, false);
         return;
     }
@@ -2051,7 +2055,7 @@ void Gui::contextMenu(const Hit& h, int x, int y) {
     itemMenu(h, w.context, {x, y, 0, 0}, style, false);
 }
 
-void Gui::scaleMenu(int x, int y) {
+void Gui::scaleMenu(Rect at) {
     std::vector<MenuEntry> menu;
     for (int s = 1; s <= 4; ++s) {
         MenuEntry e;
@@ -2060,7 +2064,7 @@ void Gui::scaleMenu(int x, int y) {
         e.current = s == scale_;
         menu.push_back(e);
     }
-    openMenu(std::move(menu), {x, y, 0, 0}, "", [this](int id) {
+    openMenu(std::move(menu), at, "", [this](int id) {
         if (id > 0) setScale(id);
     });
 }
