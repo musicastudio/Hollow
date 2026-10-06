@@ -28,7 +28,7 @@ struct State::Impl {
     Msg midi[256];
     std::atomic<uint32_t> midiHead{0}, midiTail{0};   // head: next write, tail: next read
     // What the audio side reports (written on the audio thread, read by the GUI).
-    std::atomic<bool> held[128] = {}, sustained[128] = {}, pedal{false};
+    std::atomic<bool> held[128] = {};
     std::atomic<int> bend{0}, voices{-1}, learnParam{-1};
     std::atomic<int> ccs[128], ccMap[128];   // last value (-1 = never), assigned param (-1 = none)
     std::atomic<unsigned> midiCount{0};
@@ -179,12 +179,16 @@ bool State::hasData(const std::string& key) const {
     return impl_->data.count(key) != 0;
 }
 
+// Text data under a key starting "live." is what a processor shows (a display's points): never saved, and
+// setting it never marks the instance modified.
+static bool isLive(const std::string& key) { return key.compare(0, 5, "live.") == 0; }
+
 void State::setData(const std::string& key, const std::string& value) {
     std::lock_guard<std::mutex> g(impl_->uiLock);
     auto it = impl_->data.find(key);
     if (it != impl_->data.end() && it->second == value) return;
     impl_->data[key] = value;
-    impl_->modified.store(true);
+    if (!isLive(key)) impl_->modified.store(true);
 }
 
 // ---- what the audio side knows ----------------------------------------------------------------
@@ -194,23 +198,18 @@ void State::midiIn(const uint8_t* b, int count) {
     m.midiCount.fetch_add(1, std::memory_order_relaxed);
     if (count < 2) return;
     int status = b[0] & 0xf0, d1 = b[1] & 127, d2 = count > 2 ? b[2] & 127 : 0;
+    // A key is lit from its note on to its note off. A sustain pedal is not followed: a keyboard
+    // showing every key played since the pedal went down says nothing about what is being played.
     if (status == 0x90 && d2 > 0) {
         m.held[d1].store(true);
-        m.sustained[d1].store(false);
     } else if (status == 0x80 || status == 0x90) {
-        if (m.pedal.load()) m.sustained[d1].store(true);   // the pedal keeps it sounding
-        else m.held[d1].store(false);
+        m.held[d1].store(false);
     } else if (status == 0xe0) {
         m.bend.store((d1 | d2 << 7) - 8192);
     } else if (status == 0xb0) {
         m.ccs[d1].store(d2);
-        if (d1 == 64) {
-            m.pedal.store(d2 >= 64);
-            for (int n = 0; n < 128 && d2 < 64; ++n)
-                if (m.sustained[n].exchange(false)) m.held[n].store(false);
-        }
         if (d1 == 120 || d1 == 123)
-            for (int n = 0; n < 128; ++n) { m.held[n].store(false); m.sustained[n].store(false); }
+            for (int n = 0; n < 128; ++n) m.held[n].store(false);
         int learning = m.learnParam.exchange(-1);
         if (learning >= 0) {   // one parameter, one controller: learning moves an older assignment
             for (int c = 0; c < 128; ++c)
@@ -299,7 +298,8 @@ std::string State::save() const {
     for (size_t i = 0; i < size(); ++i) s += "param " + def(i).id + " " + formatNumber("%.17g", get(i)) + "\n";
     {
         std::lock_guard<std::mutex> g(impl_->uiLock);
-        for (auto& kv : impl_->data) s += "data [" + jsonQuote(kv.first) + "," + jsonQuote(kv.second) + "]\n";
+        for (auto& kv : impl_->data)
+            if (!isLive(kv.first)) s += "data [" + jsonQuote(kv.first) + "," + jsonQuote(kv.second) + "]\n";
     }
     for (auto& cp : midiMap()) s += "cc " + std::to_string(cp.first) + " " + def(cp.second).id + "\n";
     impl_->modified.store(false);

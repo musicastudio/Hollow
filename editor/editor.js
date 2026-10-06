@@ -54,7 +54,10 @@ function binPaths(prefix, flat) {
   return [...all].filter(p => p.startsWith(prefix) && p.endsWith('.png') && exists(p) && !(flat && p.slice(prefix.length).includes('/'))).sort();
 }
 const imageNames = () => binPaths('images/').map(p => p.slice(7, -4));
-const fontNames = () => binPaths('fonts/', true).map(p => p.slice(6, -4));
+// A TrueType font of skin.json "fonts" ({ file, size, colour, tracking, shadow }), or null for a glyph strip.
+const ttfSpec = n => { const f = skin()?.fonts?.[n]; return f && typeof f.file === 'string' ? f : null; };
+const fontNames = () => [...new Set([...binPaths('fonts/', true).map(p => p.slice(6, -4)),
+  ...Object.keys(skin()?.fonts || {}).filter(ttfSpec)])].sort();
 
 // ---- server -------------------------------------------------------------------------------------
 
@@ -237,6 +240,11 @@ async function save() {
 
 const cache = new Map(); // path -> { want, promise, rgba, bmp, w, h, font }
 function srcKey(path) {
+  const tt = path.startsWith('fonts/') && !exists(path) && ttfSpec(path.slice(6, -4));
+  if (tt) {   // a TrueType font: its spec and its file's version
+    const k = srcKey('fonts/' + tt.file);
+    return k == null ? null : 'ttf:' + JSON.stringify(tt) + (k instanceof Blob ? k.size : k);
+  }
   if (path in S.bins) return S.bins[path];
   const f = S.files[path];
   return f ? `${f.size}:${f.mtime}` : null;
@@ -253,7 +261,46 @@ async function decodeAny(bytes) {
 }
 const toBitmap = img => createImageBitmap(new ImageData(new Uint8ClampedArray(img.data.buffer, img.data.byteOffset, img.data.length), img.width, img.height));
 const pngBlob = async img => new Blob([await L.pngEncode(img)], { type: 'image/png' });
+// A TrueType font as the glyph strip the editor draws with: its Latin-1 glyphs set by the browser in a
+// marker-row strip, in its colour over its shadow, each cell its advance plus tracking, rounded. The runtime
+// rasterizes the same file itself (stb_truetype) with 1/64 px advances, so a line can differ by a pixel.
+async function ttfStrip(sp) {
+  const fam = 'skinfont_' + sp.file.replace(/\W/g, '_');
+  if (![...document.fonts].some(f => f.family === fam)) {
+    const ff = new FontFace(fam, await (await blobOf('fonts/' + sp.file)).arrayBuffer());
+    document.fonts.add(await ff.load());
+  }
+  const px = sp.size || 12, track = sp.tracking || 0, sh = sp.shadow, [sdx, sdy] = sh?.offset || [0, 0];
+  const ctl = k => k < 32 || (k >= 127 && k < 160);
+  const g = h('canvas', { width: 8, height: 8 }).getContext('2d');
+  g.font = `${px}px "${fam}"`;
+  let asc = 0, desc = 0;
+  for (let k = 33; k < 127; k++) {
+    const m = g.measureText(String.fromCharCode(k));
+    asc = Math.max(asc, m.actualBoundingBoxAscent); desc = Math.max(desc, m.actualBoundingBoxDescent);
+  }
+  const base = Math.ceil(asc), H = base + Math.ceil(desc) + Math.max(0, sdy);
+  const widths = Array.from({ length: 256 }, (_, k) => ctl(k) ? 1 : Math.max(1, Math.round(g.measureText(String.fromCharCode(k)).width + track)));
+  const W = widths.reduce((a, b) => a + b, 0), c = h('canvas', { width: W, height: H + 1 }), o = c.getContext('2d');
+  o.font = g.font;
+  let x = 0;
+  widths.forEach((w, k) => {
+    o.fillStyle = '#000'; o.fillRect(x, 0, 1, 1);   // the marker row: one mark where each glyph starts
+    if (!ctl(k)) {
+      const ch = String.fromCharCode(k);
+      if (sh) { o.fillStyle = L.cssColour(sh.colour) || 'rgba(0,0,0,.5)'; o.fillText(ch, x + sdx, 1 + base + sdy); }
+      o.fillStyle = L.cssColour(sp.colour) || '#fff'; o.fillText(ch, x, 1 + base);
+    }
+    x += w;
+  });
+  const d = o.getImageData(0, 0, W, H + 1);
+  return { width: W, height: H + 1, data: new Uint8Array(d.data.buffer) };
+}
 async function loadImage(path, key) {
+  if (typeof key === 'string' && key.startsWith('ttf:')) {
+    const rgba = await ttfStrip(ttfSpec(path.slice(6, -4)));
+    return { rgba, w: rgba.width, h: rgba.height, bmp: await toBitmap(rgba), font: L.parseFont(rgba) };
+  }
   const rgba = await decodeAny(key instanceof Blob ? new Uint8Array(await key.arrayBuffer()) : await bytesOf(await api.get('skin', path)));
   return { rgba, w: rgba.width, h: rgba.height, bmp: await toBitmap(rgba), font: path.startsWith('fonts/') ? L.parseFont(rgba) : null };
 }

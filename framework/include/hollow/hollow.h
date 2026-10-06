@@ -99,7 +99,7 @@ public:
     void midiIn(const uint8_t* bytes, int size);   // key and wheel display, MIDI learn, assigned CCs
     void setLoad(double fraction);                 // time spent in process() / block duration
     void setVoices(int voices);
-    bool noteHeld(int note) const;
+    bool noteHeld(int note) const;                  // from a note on to its note off; a sustain pedal is not followed
     int pitchBend() const;                          // -8192..8191
     int cc(int number) const;                       // last value 0..127, -1 if never received
     unsigned midiInCount() const;                   // grows with every incoming message
@@ -155,6 +155,15 @@ std::unique_ptr<Processor> createProcessor(State& state);
 
 // ---- the editor window ------------------------------------------------------------------------
 
+// The keys the editor knows by name. Letters and digits are not here: they travel beside these as the
+// physical key's ASCII code, so this stays a list of editing commands.
+enum Key { KeyNone, KeyLeft, KeyRight, KeyUp, KeyDown, KeyHome, KeyEnd, KeyBackspace, KeyDelete, KeyEnter, KeyEscape, KeyTab, KeySelectAll };
+
+// Opt-in keyboard diagnostics, for working out where a host's keys go: with HOLLOW_KEYLOG set to a file
+// path, the keyboard path appends what it sees there. One pointer test when the variable is unset.
+void keyLog(const char* fmt, ...);
+bool keyLogOn();
+
 class Editor {
 public:
     // Implemented by the format layer; called on the GUI thread, for host params only.
@@ -174,8 +183,14 @@ public:
     void detach();
     int width() const;                    // window size in pixels: root view size * scale
     int height() const;
-    int scale() const;                    // 1..4, remembered in State::ui()
-    void setScale(int s);                 // resizes the window and calls Host::resize
+    double scale() const;                 // one of the skin's "scales", else 1..4; remembered in State::ui()
+    void setScale(double s);              // resizes the window and calls Host::resize
+    // A key the host delivered through its plug-in API rather than to the window, for the hosts that keep
+    // the keyboard to themselves (REAPER's "send all keyboard input to plugin"). `character` is what the key
+    // typed, as the host reported it and so as the layout made it, 0 for a key that types nothing; which key
+    // that was is worked out here. True when the editor used it, which is what such a host takes as "mine";
+    // false leaves the key to the host.
+    bool key(Key k, unsigned character, bool shift, bool ctrl, bool alt);
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
@@ -183,6 +198,7 @@ private:
 
 // Offscreen render of a view (tools and tests): RGBA8 straight alpha, row-major.
 bool renderView(const Skin& skin, const std::string& view, std::vector<uint8_t>& rgba, int& width, int& height,
-                const std::string& stateBlob = {});   // stateBlob: a saved state ("hollow-state 1") to render with
+                const std::string& stateBlob = {},   // stateBlob: a saved state ("hollow-state 1") to render with
+                double scale = 0);                   // one of the skin's "scales" (0: the state's, else 1x)
 
 } // namespace hollow

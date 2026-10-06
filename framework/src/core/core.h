@@ -78,10 +78,14 @@ struct Surface {
     int weight[256] = {}, chroma[256] = {};
 };
 
+// A picture font's strip, or a TrueType font (skin.json "fonts") rasterized into one at the skin's scale.
 struct Font {
     Image img;
     int top = 0, height = 0;     // glyph rows in img
-    int x[256] = {}, w[256] = {};
+    int ink0 = 0, ink1 = 0;      // the cap band: glyph box rows from the cap tops down to the baseline
+    int x[256] = {}, w[256] = {}; // each glyph's cell in img
+    int ox[256] = {};            // where the cell is drawn from the pen (a TrueType glyph's overhang to the left)
+    int adv[256] = {};           // how far the pen moves, in 1/64 px
     uint32_t colour = 0xffffffff; // average colour of its opaque pixels
     uint32_t caret = 0, selection = 0x803c78d8;   // text entry; caret 0 = colour (skin.json "fonts")
     int width(const std::string& utf8) const;
@@ -104,10 +108,12 @@ struct Text {
     int align = 0, valign = 0;   // 0 left/top, 1 center/middle, 2 right/bottom
 };
 struct Action {
-    enum Type { None, Goto, Set, Toggle, Url, Step, MidiMap, Presets, Sequence, Data, File, Value, Standalone, Scale } type = None;
+    enum Type { None, Goto, Set, Cycle, Toggle, Url, Step, MidiMap, Presets, Sequence, Data, File, Value, Standalone, Scale, Modal } type = None;
     std::string target, stack;   // Goto: view and stack; Toggle: widget name; Url: the URL; MidiMap: remove / reset;
-                                 // Presets: the data table
-    Vars vars;                   // Goto and Set; Data: text key (may hold {vars}) to text
+                                 // Presets: the data table; Cycle: the var it steps
+    std::vector<std::string> values;   // Cycle: the var's values in order, wrapping past the last
+    Vars vars;                   // Goto and Set; Data and Modal: text key (may hold {vars}) to text
+    Vars set;                    // Goto and Value: skin-wide vars it sets before it shows the view
     double amount = 0;           // Step; Value: the value it sets
     std::string key, nameKey;    // Presets: the envelope data key, the text key of the name field
     bool save = false;           // Presets: store into the chosen slot instead of loading it
@@ -118,10 +124,20 @@ struct Action {
     std::string title;           // File: the dialog's title (target: open / save, key: the text data key, nameKey:
                                  // a save's file name, vars: file types, name to extensions)
 };
+// skin.json "keys": a chord and what it does. `ch` is the physical key as an uppercase ASCII letter
+// or a digit, 0 when the chord names one of the Key commands instead. The action is any a button can
+// carry, so a binding reaches a page, a var or a modal without the skin repeating itself.
+struct Binding {
+    Key key = KeyNone;
+    unsigned ch = 0;
+    bool shift = false, ctrl = false, alt = false;
+    Action action;
+};
 struct Item {                    // dropdown and context menu entries
     std::string label, shortLabel;
     double value = 0;
     bool separator = false, check = false, columnBreak = false;
+    bool disabled = false;       // shown, never chosen (a heading)
     Action action;               // run when chosen, instead of setting the value
     std::vector<Item> items;     // a submenu
 };
@@ -146,6 +162,7 @@ struct Column {                  // list columns
     int width = 0, align = 0;
     bool editInt = false;
     int image = -1;              // an icon column: this image, centred, for each non-empty cell
+    bool tileCell = false;       // "tileCell": the cell's number is the tile to draw (a lamp per row)
 };
 
 class Gui;
@@ -197,6 +214,7 @@ struct Widget {
     int pressOffset[2] = {0, 0};
     Action action;
     std::vector<Item> items, context;
+    std::string itemsData;       // dropdown "itemsData": its items are this text data's lines (with {vars})
     std::string menuStyle;       // a skin.json menu style name, "native", or "" for the default
     bool hasMenuAt = false;      // "menuAt": the menu opens with its top-left at this point of the view
     int menuAt[2] = {0, 0};
@@ -239,7 +257,7 @@ struct Widget {
     int first = 36, count = 61;  // piano: MIDI note of the first key, number of keys
     int velocity = 0;            // piano: a fixed velocity, 0 = from the height on the key
     bool glide = true;           // piano: dragging across keys plays them
-    int keyImages[9] = {-1, -1, -1, -1, -1, -1, -1, -1, -1};   // piano: c d e f g a b black top
+    int keyImages[10] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1};   // piano: c d e f g a b black top low
     bool surface = true;         // false keeps the skin's surface off all it draws (an embed: its whole view)
     Json json;                   // the whole widget object, for fields only a custom kind reads
 };
@@ -278,6 +296,12 @@ public:
     // menu and tooltip chrome, defaults of pixel fields, drag rates). 1.5 for a skin drawn at 1.5x.
     double density = 1;
     int dp(double v) const { return (int)std::lround(v * density); }   // built-in geometry at this density
+    // skin.json "scales": the window scales the skin is drawn at, each a load of the skin with its geometry,
+    // fonts and density multiplied and its artwork from scales/<scale>/ (or the 1x art resampled). Empty:
+    // the window is the 1x canvas repeated pixel for pixel at 1x to 4x.
+    std::vector<double> scales;
+    double scale = 1;             // the scale this load is at
+    std::shared_ptr<const std::map<std::string, std::string>> files;   // what it was loaded from, for another scale
     int lw() const { return std::max(1, dp(1)); }                     // line width of built-in drawings
     Vars vars;
     std::vector<ParamDef> params;
@@ -295,12 +319,19 @@ public:
     uint32_t learnOutline = 0xff000099;
     std::vector<std::pair<int, std::string>> learnDefaults;   // CC and param id of a fresh instance
     std::map<std::string, Json> tables;            // data/<name>.json
+    uint32_t modalVeil = 0x80000000;               // skin.json "modal": the veil over the window behind a modal
+    std::string closeModal;                        // skin.json "close": the standalone's close asks this modal
+    Cond closeIf;                                  // first, while this holds
+    std::string settingsView;                      // skin.json "standalone": its audio and MIDI settings as a modal
+    std::vector<Binding> keys;                     // skin.json "keys": keyboard shortcuts, in the order given
     const View* view(const std::string& name) const;
     const Json& table(const std::string& name) const;   // Null when missing
 };
 
 // Loads a skin folder; null (and *error) on failure. loadSkin() uses it for HOLLOW_SKIN_DIR.
 std::shared_ptr<Skin> loadSkinDir(const std::string& dir, std::string* error = nullptr);
+// The same skin loaded again at another of its scales.
+std::shared_ptr<Skin> scaledSkin(const Skin& base, double scale, std::string* error = nullptr);
 // Signature of every file's name and modification time under dir, for live reload polling.
 uint64_t skinDirStamp(const std::string& dir);
 
@@ -320,6 +351,11 @@ void drawImage(Canvas& c, const Image& img, int tile, Rect dst, bool stretch = f
 void bakeSurface(Image& img, int x, int y, const Surface& sf);
 // Text layout: lines stacked from valign, each aligned in r and clipped to r's right/bottom.
 void drawText(Canvas& c, const Font& f, const std::string& s, Rect r, int align, int valign, bool multiline);
+// Where the first line's glyph box goes in a rect of height h so that the text reads as vertically
+// centred: it is the cap band that is centred, not the glyph box, whose blank rows above the caps and
+// below the descenders differ from font to font. Callers that place rows themselves (menus, lists)
+// use this to agree with drawText's "middle".
+int textTop(const Font& f, int h, int lines = 1);
 
 // ---- platform window (platform/win32.cpp, platform/mac.mm) ---------------------------------------
 
@@ -333,6 +369,7 @@ struct MenuEntry {
     bool check = false;           // a check item: the menu indents its labels
     bool current = false;         // highlighted when the menu opens
     bool columnBreak = false;     // native menus: starts a new column
+    bool disabled = false;        // shown, never highlighted or chosen
     std::vector<MenuEntry> items; // a submenu
 };
 PlatformWindow* platformOpen(void* parent, Gui* gui);
@@ -349,14 +386,32 @@ extern const bool kNativeMenus;   // false: the platform has none, and a "native
 void platformTip(PlatformWindow* w, const std::string& text);        // tooltip of the whole window, "" = none
 void platformFocus(PlatformWindow* w, bool on);   // take the keyboard (text entry, menus, lists), or hand it back
 void platformOpenUrl(const std::string& url);
+// The key that types this character on the current layout, as an uppercase ASCII letter or digit, 0 when
+// that is not known, and in *shift whether typing it needs Shift held. A host's plug-in API hands over the
+// character a key produced rather than the key, so this is how a chord gets back to the key the window
+// itself would have reported: Shift+2 types a quote on some layouts, and only the layout knows both that
+// the quote came off the 2 key and that Shift was held to get it. The second half matters because a host
+// may report no modifiers at all on the character, Shift having been spent producing it.
+// Windows only, since its hosts are the ones that keep the keyboard; elsewhere 0, and the character is read
+// as the key as before.
+unsigned platformKeyChar(unsigned codepoint, bool* shift);
 // The standalone app's own audio and MIDI settings window (clap-wrapper's); kAudioSettings is false
 // where the platform's standalone has none.
 extern const bool kAudioSettings;
 void platformAudioSettings(PlatformWindow* w);
+// Its settings read out of that window, for a modal of the skin's: the audio API, output, input, sample
+// rate, buffer size (each one choice) and the MIDI inputs (any of them). False where it cannot be read.
+struct DeviceList {
+    std::vector<std::string> items;
+    std::vector<int> on;          // the chosen items
+};
+bool platformDevices(PlatformWindow* w, std::vector<DeviceList>& out);
+void platformSetDevice(PlatformWindow* w, int list, int item);   // a choice, or the MIDI inputs: flips the item
+// The standalone's window asks Gui::closeRequested before it closes; platformCloseApp closes it without asking.
+void platformWatchClose(PlatformWindow* w);
+void platformCloseApp(PlatformWindow* w);
 // A native open or save dialog; types: (name, "ext;ext"). False when cancelled; path in UTF-8.
 bool platformFileDialog(PlatformWindow* w, bool save, const std::string& title, const Vars& types, const std::string& name, std::string& path);
-
-enum Key { KeyNone, KeyLeft, KeyRight, KeyUp, KeyDown, KeyHome, KeyEnd, KeyBackspace, KeyDelete, KeyEnter, KeyEscape, KeyTab, KeySelectAll };
 
 // ---- the GUI: one shown view tree, its input handling and painting --------------------------------
 
@@ -375,6 +430,8 @@ struct Inst {                    // one widget of one shown view
     int sent = -1;                // dials with midi: the last value sent or received
     int row = -1;                 // lists: the selected row
     int revealed = -2;            // bound lists: the selected row when it was last scrolled into view
+    int context = -1;             // lists: the row a right-click is for, lit while its menu or modal is open
+    std::string caption;          // a caption's "{data:}" text at the last look, to repaint when it changes
     std::string text;             // text.text with {vars} resolved
     std::string key, data;        // resolved text data key, and its text (or source value) at the last paint
     bool stored = false;          // whether the key held data at the last paint
@@ -406,12 +463,13 @@ public:
     Gui(const Skin* skin, State& state, Editor::Host* host, const std::string& root = "");
     ~Gui();
     void setSkin(const Skin* skin);              // live reload: rebuild, keeping the GUI state
-    int width() const { return w_; }             // canvas size (root view, scale 1)
+    int width() const { return w_; }             // canvas size (root view, at the skin's scale)
     int height() const { return h_; }
-    int scale() const { return scale_; }
-    void setScale(int s);
+    int scale() const { return scale_; }         // pixel repeats from canvas to window (1 for a skin with "scales")
+    double zoom() const { return zoom_; }        // the skin's scale the canvas is drawn at
+    void setScale(double s);                     // one of the skin's "scales", else 1 to 4 pixel repeats
     std::string uiJson() const;
-    void applyUi(const std::string& json);
+    void applyUi(const std::string& json, bool withScale = true);   // withScale: its "scale" too
     const std::vector<uint32_t>& pixels();       // repaints what is dirty, then returns the canvas
     void invalidate(Rect r);
     void invalidateAll() { invalidate({0, 0, w_, h_}); }
@@ -422,9 +480,15 @@ public:
     void rightUp(int x, int y, bool shift);
     void mouseLeave();
     void wheel(int x, int y, double notches, bool shift);
-    bool keyDown(Key k, bool shift, bool ctrl);  // true when used (text entry, a menu or a list has the keys)
+    // True when the editor used the key: text entry, a menu, a focused list or a modal has them, or the
+    // key matched one of the skin's "keys" bindings. False means the key is the host's, and the platform
+    // hands it on. `ch` is the physical key as an uppercase ASCII letter or digit, 0 for anything else.
+    // fromHost marks a key the host delivered through its plug-in API rather than to the window, which is
+    // what tells a chord that arrived by both routes from two real presses.
+    bool keyDown(Key k, bool shift = false, bool ctrl = false, bool alt = false, unsigned ch = 0, bool fromHost = false);
     void keyChar(unsigned codepoint);
     bool wantsKeys() const;
+    void releaseKeys();                          // hands the keyboard back, unless the skin has shortcuts
     void focusLost();                            // commits text entry, closes menus, drops list focus
     void tick();                                 // about 30 Hz: automation, repeats, tooltips, caret, animation
 
@@ -440,6 +504,15 @@ public:
     bool pressed(const Hit& h) const { return live(press_) && press_ == h; }
     bool live(const Hit& h) const { return h.node && h.gen == gen_; }
     bool standalone() const { return kAudioSettings && host_ && host_->standalone(); }   // the app's settings are ours to open
+    bool closeRequested();                       // the standalone's window is closing: false when a modal asks first
+    // For tests that drive the GUI without a window (tools/check_gui.cpp).
+    bool widgetRect(const std::string& path, Rect& r);   // a visible widget's rect, by embed path and name
+    std::string tipOf(const std::string& path);           // the tooltip it would show, its shortcut included
+    std::vector<std::string> menuLabels() const;          // the open (deepest) menu's items, "-" a separator
+    bool chooseMenu(const std::string& label);           // picks an item of the open menu, as a click would
+    const std::string& modal() const { return modalShown_; }
+    struct Probe { std::string path; const Widget* w; Rect r; int param; };
+    std::vector<Probe> probes();                          // every visible, enabled widget, embeds' contents too
     std::string subst(const Node& n, const std::string& s) const;   // {var} and {var:upper}
     int paramOf(const Hit& h, const std::string& id) const;         // a param id with {vars}, -1 if unknown
     double plain(const Node& n, int i, int which = 0) const;        // bound widgets read State, others their local value
@@ -482,7 +555,10 @@ private:
         size_t caret = 0, anchor = 0;            // byte offsets; the selection runs between them
         std::function<void(const std::string&)> commit;
     };
-    const Skin* skin_;
+    const Skin* skin_;                           // what is drawn: base_, or zoomed_ at another scale
+    const Skin* base_;                           // the skin at 1x
+    std::shared_ptr<Skin> zoomed_;
+    double zoom_ = 1;
     State& state_;
     Editor::Host* host_;
     std::shared_ptr<Skin> owned_;
@@ -500,6 +576,13 @@ private:
     double anchorNorm_ = 0, wheelAcc_ = 0, zone_ = 0;   // zone_: a number drag's units per pixel from its zone, 0 = none
     using Time = std::chrono::steady_clock::time_point;
     Time nextRepeat_, tipStill_, statusUntil_, menuOpened_, blinkStart_, midiUntil_;
+    // A chord a host sends through its API and also lets reach the window arrives twice (seen with
+    // Shift+digit). The last one acted on, so the second copy can be dropped: same chord, other route,
+    // close enough in time. Two presses by the same route are two presses and always act.
+    Time lastChordAt_;
+    unsigned lastChordCh_ = 0;
+    int lastChordKey_ = 0, lastChordMods_ = -1;
+    bool lastChordFromHost_ = false;
     std::vector<Menu> menus_;                    // open skinned menus, the root first
     std::function<void(int)> pick_;
     bool menuPressed_ = false;                   // a press on the open menu cancels the release guard
@@ -516,6 +599,11 @@ private:
     unsigned midiSeen_ = 0;
     bool animating_ = false;
     uint32_t taus_[3] = {0, 0, 0};               // the random rows' generator (three-component Tausworthe)
+    bool contextLit_ = false;                    // a list row lit by a right-click (Inst::context)
+    int modalVeil_ = -1, modalBox_ = -1;         // the root's veil and embed for a modal (skin.cpp adds them)
+    std::string modalShown_;                     // the view it shows, "" when closed
+    bool closing_ = false;                       // the standalone closes without asking
+    double deviceSent_[6] = {-1, -1, -1, -1, -1, -1};   // the settings modal: each device param as last read
 
     void rebuild();
     void build(Node& n, const std::string& view, Node* parent, const std::string& path, int depth);
@@ -576,6 +664,7 @@ private:
     void dropdown(const Hit& h);
     void contextMenu(const Hit& h, int x, int y);
     void itemMenu(const Hit& h, const std::vector<Item>& items, Rect at, const std::string& style, bool current);
+    void contextMenu(const Hit& h, int x, int y, const std::vector<Item>& items);
     void scaleMenu(Rect at);
     void openSkinned(size_t level, std::vector<MenuEntry> items, Rect at, bool below, const MenuStyle* st);
     void closeMenus(size_t from = 0);
@@ -587,6 +676,10 @@ private:
     void showTip();
     void hideTip(bool block);
     void paintTip(Canvas& c);
+    std::string tipText(const Hit& h) const;     // the widget's tip, and its shortcut when a binding runs its action
+    const Binding* bindingFor(const Action& a) const;
+    static std::string chordName(const Binding& b);
+    bool runKey(Key k, unsigned ch, bool shift, bool ctrl, bool alt, bool fromHost);
     void updateStatus();
     void invalidateStatus(Node& n);
     bool editing(const Node& n, int i) const { return editing_on_ && live(edit_.h) && edit_.h.node == &n && edit_.h.i == i; }
@@ -614,6 +707,18 @@ private:
     void writeHidden(const Node& n, std::string& out) const;
     void writeScroll(const Node& n, std::string& out) const;
     void saveUi();
+    void syncModal();                            // shows the view the modal key names, or closes it
+    void setModal(const std::string& view);
+    void standaloneVar();
+    bool readDevices();
+    void syncDevices();
+    int listRowAt(const Hit& h, int y) const;
+    void unlight(Node& n);                       // clears every list's right-clicked row    // the row of a list under y, -1 if none
+    std::vector<Item> itemsOf(const Node& n, int i) const;   // a dropdown's items, or its "itemsData" lines
 };
+
+extern const char* const kModalKey;              // text data naming the open modal view
+extern const char* const kModalVeil;             // the root's synthesized modal widgets
+extern const char* const kModalBox;
 
 } // namespace hollow

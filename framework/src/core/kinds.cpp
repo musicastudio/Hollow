@@ -273,7 +273,9 @@ static void pianoDraw(Gui& g, Canvas& c, const Hit& h, Rect r) {
         for (auto& k : keys) {   // white keys come first in the list, the black keys over them
             int pc = (k.first % 12 + 12) % 12;
             static const int whiteImage[12] = {0, 7, 1, 7, 2, 3, 7, 4, 7, 5, 7, 6};
-            int img = w.keyImages[pc == 0 && k.first == w.first + w.count - 1 && w.keyImages[8] >= 0 ? 8 : whiteImage[pc]];
+            // the top C has no black key on its right, and "low", the first key, none on its left (an 88's A0)
+            int img = w.keyImages[pc == 0 && k.first == w.first + w.count - 1 && w.keyImages[8] >= 0 ? 8
+                                  : k.first == w.first && !isBlack(k.first) && w.keyImages[9] >= 0 ? 9 : whiteImage[pc]];
             if (img < 0) continue;
             int tile = lit(k.first) ? 1 : 0;
             Rect t = g.skin().images[img].tile(tile);
@@ -513,18 +515,19 @@ static std::vector<double> wireInputs(Gui& g, const Hit& h) {   // 9 x 11 amount
 
 // Text centred on its ink rather than on its cells, which carry blank rows and a spacing column.
 static void inkCentred(Canvas& c, const Font& f, const std::string& s, Rect b) {
-    int top = f.height, bottom = -1, left = b.w, right = -1, x = 0;
+    int top = f.height, bottom = -1, left = b.w, right = -1, pen = 0;
     for (unsigned char ch : s) {   // single-byte text only (operator numbers)
+        int x = ((pen + 32) >> 6) + f.ox[ch];
         for (int y = 0; y < f.height; ++y)
             for (int i = 0; i < f.w[ch]; ++i)
                 if (f.img.px[(size_t)(f.top + y) * (size_t)f.img.w + (size_t)(f.x[ch] + i)] >> 24) {
                     top = std::min(top, y), bottom = std::max(bottom, y);
                     left = std::min(left, x + i), right = std::max(right, x + i);
                 }
-        x += f.w[ch];
+        pen += f.adv[ch];
     }
     if (bottom < 0) return;
-    drawText(c, f, s, {b.x + (b.w - (right - left + 1)) / 2 - left, b.y + (b.h - (bottom - top + 1)) / 2 - top, x, f.height}, 0, 0, false);
+    drawText(c, f, s, {b.x + (b.w - (right - left + 1)) / 2 - left, b.y + (b.h - (bottom - top + 1)) / 2 - top, (pen + 32) >> 6, f.height}, 0, 0, false);
 }
 
 // In matrix-local design units (scaled by the skin's density as they are drawn), operator box n
@@ -596,7 +599,8 @@ static void wiresTick(Gui& g, const Hit& h, Rect r) {
 
 // ---- matrix_op: an operator box; fields image, letter, param (on/off), action (goto), bypass ------
 
-// Tile (selected ? 1 : 0) + (off ? 2 : 0): selected while var op names this box (never "in").
+// Tile (selected ? 1 : 0) + (off ? 2 : 0): selected while var op names this box (never "in"). With a text
+// font the box's letter is drawn over it, centred on its ink in the face above the art's 2 px foot.
 static void boxDraw(Gui& g, Canvas& c, const Hit& h, Rect r) {
     const Widget& w = g.wid(h);
     if (w.image < 0) return;
@@ -606,6 +610,7 @@ static void boxDraw(Gui& g, Canvas& c, const Hit& h, Rect r) {
     const Image& img = g.skin().images[w.image];
     Rect t = img.tile(0);
     drawImage(c, img, (selected ? 1 : 0) + (off ? 2 : 0), {r.x, r.y, t.w, t.h});
+    if (w.text.font >= 0 && !letter.empty()) inkCentred(c, g.skin().fonts[w.text.font], letter, {r.x, r.y, t.w, t.h - g.skin().dp(2)});
 }
 
 static bool boxDown(Gui& g, const Hit& h, Rect, int, int, bool) {   // its page (also on a double-click's second press)

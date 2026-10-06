@@ -29,6 +29,8 @@ struct PlatformWindow {
     Gui* gui = nullptr;
     Display* dpy = nullptr;
     Window win = 0;
+    Window parent = None;              // the host's window: keys the editor does not use go back to it
+    bool tookFocus = false;            // the keyboard was taken once the window was mapped
     GC gc = nullptr;
     XImage* img = nullptr;
     std::vector<uint32_t> frame;       // the canvas at the window's scale, what img points at
@@ -102,11 +104,18 @@ static void event(PlatformWindow* w, XEvent& e) {
     const int s = g.scale();
     switch (e.type) {
     case Expose:
+        // The window is mapped by now, so this is the first safe point to take the keyboard, and it is on the
+        // window's own thread, which is the only thread XSetInputFocus may be called from here.
+        if (!w->tookFocus && !g.skin().keys.empty()) {
+            w->tookFocus = true;
+            platformFocus(w, true);
+        }
         present(w, {floorDiv(e.xexpose.x, s), floorDiv(e.xexpose.y, s), e.xexpose.width / s + 2, e.xexpose.height / s + 2});
         break;
     case ButtonPress: {
         const int x = floorDiv(e.xbutton.x, s), y = floorDiv(e.xbutton.y, s);
         const bool shift = (e.xbutton.state & ShiftMask) != 0;
+        if (!g.skin().keys.empty()) platformFocus(w, true);   // a click takes the keyboard back after the host has had it
         if (e.xbutton.button == 4 || e.xbutton.button == 5) {   // the wheel arrives as buttons
             g.wheel(x, y, e.xbutton.button == 4 ? 1.0 : -1.0, shift);
         } else if (e.xbutton.button == 1) {
@@ -133,15 +142,31 @@ static void event(PlatformWindow* w, XEvent& e) {
     case LeaveNotify:
         if (!(e.xcrossing.state & Button1Mask)) g.mouseLeave();   // a drag keeps its implicit grab
         break;
+    // The editor holds the keyboard while its window is up, so a skin's "keys" shortcuts work without a click
+    // first. While text entry, a menu or a list has the keyboard it keeps every key, as it always did;
+    // otherwise only a chord in the skin's bindings is ours and the rest goes on to the host's window.
     case KeyPress: {
-        if (!g.wantsKeys()) break;
         char buf[16] = {};
         KeySym sym = 0;
         const int n = XLookupString(&e.xkey, buf, sizeof buf - 1, &sym, nullptr);
-        const bool ctrl = (e.xkey.state & ControlMask) != 0;
+        const bool shift = (e.xkey.state & ShiftMask) != 0, ctrl = (e.xkey.state & ControlMask) != 0;
+        const bool alt = (e.xkey.state & Mod1Mask) != 0;
         const Key k = keyOf(sym, ctrl);
-        if (k != KeyNone) g.keyDown(k, (e.xkey.state & ShiftMask) != 0, ctrl);
-        else if (n == 1 && (unsigned char)buf[0] >= 32 && buf[0] != 127) g.keyChar((unsigned char)buf[0]);   // Latin-1, as the fonts are
+        if (g.wantsKeys()) {
+            if (k != KeyNone) g.keyDown(k, shift, ctrl, alt);
+            else if (n == 1 && (unsigned char)buf[0] >= 32 && buf[0] != 127) g.keyChar((unsigned char)buf[0]);   // Latin-1, as the fonts are
+            break;
+        }
+        // The physical key, read with no modifier, so Alt+F is 'F' whatever Alt itself would have typed.
+        const KeySym plain = XLookupKeysym(&e.xkey, 0);
+        unsigned ch = 0;
+        if (plain >= XK_a && plain <= XK_z) ch = (unsigned)(plain - XK_a + 'A');
+        else if (plain >= XK_0 && plain <= XK_9) ch = (unsigned)plain;
+        if (g.keyDown(k, shift, ctrl, alt, ch)) break;
+        if (w->parent != None) {   // not ours: the host's window gets it
+            e.xkey.window = w->parent;
+            XSendEvent(w->dpy, w->parent, True, KeyPressMask, &e);
+        }
         break;
     }
     case FocusOut:
@@ -204,6 +229,7 @@ PlatformWindow* platformOpen(void* parent, Gui* gui) {
     a.event_mask = ExposureMask | ButtonPressMask | ButtonReleaseMask | PointerMotionMask | LeaveWindowMask | KeyPressMask | FocusChangeMask;
     a.background_pixel = BlackPixel(w->dpy, screen);
     const Window host = parent ? (Window)(uintptr_t)parent : RootWindow(w->dpy, screen);
+    if (parent) w->parent = host;   // only a plug-in has a host window to hand unused keys back to
     w->win = XCreateWindow(w->dpy, host, 0, 0, (unsigned)(gui->width() * gui->scale()), (unsigned)(gui->height() * gui->scale()), 0,
                            CopyFromParent, InputOutput, CopyFromParent, CWEventMask | CWBackPixel, &a);
     w->gc = XCreateGC(w->dpy, w->win, 0, nullptr);
@@ -297,6 +323,13 @@ static int spawn(const std::vector<std::string>& args, std::string* out) {
     return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 }
 
+// Not inverted here: no host on this platform offers keys through its plug-in API instead of the window, so
+// the character is read as the key, as it always was.
+unsigned platformKeyChar(unsigned, bool* shift) {
+    if (shift) *shift = false;
+    return 0;
+}
+
 void platformOpenUrl(const std::string& url) {
     if (url.compare(0, 7, "http://") == 0 || url.compare(0, 8, "https://") == 0) spawn({"xdg-open", url}, nullptr);
 }
@@ -304,6 +337,10 @@ void platformOpenUrl(const std::string& url) {
 // clap-wrapper's Linux standalone has no settings window.
 const bool kAudioSettings = false;
 void platformAudioSettings(PlatformWindow*) {}
+bool platformDevices(PlatformWindow*, std::vector<DeviceList>&) { return false; }
+void platformSetDevice(PlatformWindow*, int, int) {}
+void platformWatchClose(PlatformWindow*) {}
+void platformCloseApp(PlatformWindow*) {}
 
 // zenity, else kdialog: the file dialogs every desktop has one of. False when neither is installed.
 bool platformFileDialog(PlatformWindow*, bool save, const std::string& title, const Vars& types, const std::string& name, std::string& path) {

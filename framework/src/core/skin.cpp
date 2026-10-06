@@ -21,6 +21,9 @@
 #pragma warning(push, 0)
 #endif
 #include "stb/stb_image.h"
+#define STB_TRUETYPE_IMPLEMENTATION
+#define STBTT_STATIC
+#include "stb/stb_truetype.h"
 #if defined(_MSC_VER)
 #pragma warning(pop)
 #endif
@@ -291,9 +294,9 @@ int Font::width(const std::string& s) const {
             for (int k = 1; k < len && i + k < s.size(); ++k) cp = cp << 6 | ((unsigned char)s[i + k] & 63);
         }
         i += len;
-        total += w[cp < 256 ? cp : '?'];
+        total += adv[cp < 256 ? cp : '?'];
     }
-    return total;
+    return (total + 32) >> 6;
 }
 
 // A number's "valueText": a data table and how to index it, or a scale.
@@ -331,12 +334,99 @@ std::string utf8(const fs::path& p) {   // generic_u8string is std::u8string fro
     return std::string(s.begin(), s.end());
 }
 
+// The font's cap band: the glyph box rows from the cap tops down to the baseline. A picture font's box
+// is whatever its export left around the glyphs - blank rows above the caps, and below them the
+// descenders and any drop shadow - and the two margins are rarely equal, so centring the box leaves
+// text looking high (or low) by a pixel or three, differently for each font. Centring this band reads
+// as centred whatever the export did. The band is measured over the characters that sit on the
+// baseline without dipping below it, counting only solid pixels so that a soft shadow is not read as
+// ink. A font with none of them - "empty", or an icon font - keeps the whole box and so is unchanged.
+void measureInk(Font& f) {
+    f.ink0 = 0;
+    f.ink1 = f.height - 1;
+    if (f.img.px.empty()) return;
+    static const char kBand[] =   // no Q or J, whose tails drop below the baseline, nor f, which can
+        "0123456789ABCDEFGHIKLMNOPRSTUVWXYZabcdehiklmnorstuvwxz";
+    uint32_t peak = 0;
+    for (const char* ch = kBand; *ch; ++ch) {
+        int g = (unsigned char)*ch;
+        for (int y = f.top; y < f.img.h; ++y)
+            for (int x = f.x[g]; x < f.x[g] + f.w[g]; ++x) peak = std::max(peak, f.img.px[(size_t)y * f.img.w + x] >> 24);
+    }
+    if (peak < 32) return;
+    uint32_t solid = peak / 2;
+    int first = f.height, last = -1;
+    for (const char* ch = kBand; *ch; ++ch) {
+        int g = (unsigned char)*ch;
+        for (int y = f.top; y < f.img.h; ++y)
+            for (int x = f.x[g]; x < f.x[g] + f.w[g]; ++x)
+                if (f.img.px[(size_t)y * f.img.w + x] >> 24 >= solid) {
+                    first = std::min(first, y - f.top);
+                    last = std::max(last, y - f.top);
+                    break;
+                }
+    }
+    if (last >= first) { f.ink0 = first; f.ink1 = last; }
+}
+
+// Image src drawn at s times its size, tile by tile so the tiles stay whole: each pixel the average of
+// 4 x 4 bilinear samples over its footprint, in premultiplied alpha. For art with no render at a scale.
+Image resampled(const Image& src, double s) {
+    int n = std::max(src.tiles, 1);
+    Rect t0 = src.tile(0);
+    int tw = std::max(1, (int)std::lround(t0.w * s)), th = std::max(1, (int)std::lround(t0.h * s));
+    Image out = src;
+    out.slope.clear();
+    out.w = src.axisX ? tw * n : tw;
+    out.h = src.axisX ? th : th * n;
+    out.px.assign((size_t)out.w * out.h, 0);
+    for (int t = 0; t < n; ++t) {
+        Rect a = src.tile(t), b = out.tile(t);
+        auto at = [&](double x, double y, double* acc) {   // bilinear, premultiplied, clamped to the tile
+            x = std::clamp(x - 0.5, 0.0, a.w - 1.0), y = std::clamp(y - 0.5, 0.0, a.h - 1.0);
+            int x0 = (int)x, y0 = (int)y, x1 = std::min(x0 + 1, a.w - 1), y1 = std::min(y0 + 1, a.h - 1);
+            double fx = x - x0, fy = y - y0;
+            const int xs[2] = {x0, x1}, ys[2] = {y0, y1};
+            for (int j = 0; j < 2; ++j)
+                for (int i = 0; i < 2; ++i) {
+                    double k = (i ? fx : 1 - fx) * (j ? fy : 1 - fy);
+                    uint32_t p = src.px[(size_t)(a.y + ys[j]) * src.w + a.x + xs[i]];
+                    double al = (p >> 24) / 255.0 * k;
+                    acc[0] += (p >> 16 & 255) * al, acc[1] += (p >> 8 & 255) * al, acc[2] += (p & 255) * al, acc[3] += al;
+                }
+        };
+        double fx = (double)a.w / b.w, fy = (double)a.h / b.h;
+        for (int y = 0; y < b.h; ++y)
+            for (int x = 0; x < b.w; ++x) {
+                double acc[4] = {0, 0, 0, 0};
+                for (int j = 0; j < 4; ++j)
+                    for (int i = 0; i < 4; ++i) at((x + (i + 0.5) / 4) * fx, (y + (j + 0.5) / 4) * fy, acc);
+                uint32_t pa = (uint32_t)std::lround(acc[3] / 16 * 255), p = 0;
+                if (pa) {
+                    auto ch = [&](double v) { return (uint32_t)std::clamp((long)std::lround(v / acc[3]), 0L, 255L); };
+                    p = pa << 24 | ch(acc[0]) << 16 | ch(acc[1]) << 8 | ch(acc[2]);
+                }
+                out.px[(size_t)(b.y + y) * out.w + b.x + x] = p;
+            }
+    }
+    return out;
+}
+
 struct Loader {
     const Files& files;
     Skin& skin;
     const Json& meta;                         // skin.json "images"
+    const Json& fontSpecs;                    // skin.json "fonts"
+    double scale;                             // the load's scale: geometry, fonts and art at that size
     std::map<std::string, int> imageIds, fontIds;
     std::string err;
+
+    int px(double v) const { return (int)std::lround(v * scale); }
+    // A rect's edges scaled, so rects that meet at 1x still meet at any scale.
+    Rect rect(const Json& r) const {
+        int x0 = px(r[0].num()), y0 = px(r[1].num());
+        return {x0, y0, px(r[0].num() + r[2].num()) - x0, px(r[1].num() + r[3].num()) - y0};
+    }
 
     bool decode(const std::string& path, Image& img) {
         auto f = files.find(path);
@@ -359,7 +449,9 @@ struct Loader {
         if (it != imageIds.end()) return it->second;
         Image img;
         int id = -1;
-        if (decode("images/" + name + ".png", img)) {
+        // At another scale, the art rendered for it (scales/<scale>/), else the 1x art resampled.
+        bool rendered = scale != 1 && decode("scales/" + formatNumber("%g", scale) + "/" + name + ".png", img);
+        if (rendered || decode("images/" + name + ".png", img)) {
             const Json& m = meta[name];
             img.tiles = std::max(1, m["tiles"].integer(1));
             img.axisX = m["axis"].str("y") == "x";
@@ -367,8 +459,9 @@ struct Loader {
             img.surface = m["surface"].flag(true);
             if (m["slice"].type == Json::Array) {
                 img.sliced = true;
-                for (int i = 0; i < 4; ++i) img.slice[i] = std::max(0, m["slice"][i].integer());
+                for (int i = 0; i < 4; ++i) img.slice[i] = std::max(0, px(m["slice"][i].integer()));
             }
+            if (scale != 1 && !rendered) img = resampled(img, scale);
             id = (int)skin.images.size();
             skin.images.push_back(std::move(img));
             skin.imageNames.push_back(name);
@@ -378,13 +471,101 @@ struct Loader {
         return imageIds[name] = id;
     }
 
+    // A TrueType font, skin.json "fonts": { "<name>": { "file": "<file in fonts/>", "size": <em in px>, "colour",
+    // "tracking": <px added to every advance>, "shadow": { "colour", "offset": [dx, dy] } } }. Its Latin-1
+    // glyphs are rasterized at the load's scale into a strip like a picture font's: each cell runs from the
+    // pen or the glyph's ink, whichever is further left (ox), to its advance or its ink, whichever is further
+    // right, so an overhang draws whole. Kerning is not applied.
+    bool ttf(const Json& spec, Font& f) {
+        auto file = files.find("fonts/" + spec["file"].str());
+        if (file == files.end()) return false;
+        const auto* data = (const unsigned char*)file->second.data();
+        stbtt_fontinfo info;
+        if (!stbtt_InitFont(&info, data, stbtt_GetFontOffsetForIndex(data, 0))) return false;
+        float k = stbtt_ScaleForMappingEmToPixels(&info, (float)(spec["size"].num(12) * scale));
+        // The box runs from the tallest ASCII ink to the deepest, as a picture font's does, not from the font's
+        // line ascent, whose room for accents would push top-aligned text down. A Latin-1 accent above it clips.
+        int asc = 0, desc = 0;
+        for (int c = 33; c < 127; ++c) {
+            int x0, y0, x1, y1;
+            if (stbtt_GetCodepointBox(&info, c, &x0, &y0, &x1, &y1)) asc = std::max(asc, y1), desc = std::min(desc, y0);
+        }
+        const Json& sh = spec["shadow"];
+        bool shadow = sh.type == Json::Object;
+        int sdx = shadow ? px(sh["offset"][0].num(1)) : 0, sdy = shadow ? px(sh["offset"][1].num(1)) : 0;
+        uint32_t ink = colour(spec["colour"].str(), 0xffffffff), shade = colour(sh["colour"].str(), 0x80000000);
+        int base = (int)std::ceil(asc * k);
+        f.height = base + (int)std::ceil(-desc * k) + std::max(0, sdy);
+        double tracking = spec["tracking"].num(0) * scale;
+        struct Glyph { std::vector<unsigned char> a; int x0 = 0, y0 = 0, w = 0, h = 0; };
+        std::vector<Glyph> gs(256);
+        int total = 0;
+        for (int c = 0; c < 256; ++c) {
+            Glyph& g = gs[c];
+            if (c < 32 || (c >= 127 && c < 160)) continue;   // control codes: nothing, no advance
+            int gi = stbtt_FindGlyphIndex(&info, c);
+            if (!gi) gi = stbtt_FindGlyphIndex(&info, '?');
+            int adv, lsb, x1, y1;
+            stbtt_GetGlyphHMetrics(&info, gi, &adv, &lsb);
+            f.adv[c] = (int)std::lround((adv * k + tracking) * 64);
+            stbtt_GetGlyphBitmapBox(&info, gi, k, k, &g.x0, &g.y0, &x1, &y1);
+            g.w = x1 - g.x0, g.h = y1 - g.y0;
+            if (g.w > 0 && g.h > 0) {
+                g.a.resize((size_t)g.w * g.h);
+                stbtt_MakeGlyphBitmap(&info, g.a.data(), g.w, g.h, g.w, k, k, gi);
+            }
+            int left = 0, right = (std::max(f.adv[c], 0) + 63) >> 6;
+            if (!g.a.empty()) {
+                left = std::min({0, g.x0, g.x0 + sdx});
+                right = std::max({right, x1, x1 + sdx});
+            }
+            f.ox[c] = left;
+            f.w[c] = right - left;
+            f.x[c] = total;
+            total += f.w[c];
+        }
+        f.img.w = std::max(total, 1);
+        f.img.h = f.height;
+        f.img.px.assign((size_t)f.img.w * f.img.h, 0);
+        auto over = [&](int x, int y, uint32_t col, unsigned cover) {   // straight alpha, source over the strip
+            if (y < 0 || y >= f.img.h) return;
+            uint32_t& d = f.img.px[(size_t)y * f.img.w + x];
+            unsigned sa = (col >> 24) * cover / 255, da = d >> 24, oa = sa + da * (255 - sa) / 255;
+            if (!oa) return;
+            uint32_t o = oa << 24;
+            for (int s = 0; s < 24; s += 8)
+                o |= (((col >> s & 255) * sa + (d >> s & 255) * da * (255 - sa) / 255 + oa / 2) / oa) << s;
+            d = o;
+        };
+        for (int c = 0; c < 256; ++c) {
+            const Glyph& g = gs[c];
+            int gx = f.x[c] - f.ox[c] + g.x0, gy = base + g.y0;
+            for (int pass = shadow ? 0 : 1; pass < 2; ++pass)
+                for (int y = 0; y < g.h; ++y)
+                    for (int x = 0; x < g.w; ++x)
+                        if (unsigned a = g.a[(size_t)y * g.w + x])
+                            pass ? over(gx + x, gy + y, ink, a) : over(gx + x + sdx, gy + y + sdy, shade, a);
+        }
+        f.colour = ink | 0xff000000u;
+        return true;
+    }
+
     int font(const std::string& name) {
         if (name.empty()) return -1;
         auto it = fontIds.find(name);
         if (it != fontIds.end()) return it->second;
         Font f;
         int id = -1;
-        if (decode("fonts/" + name + ".png", f.img) && f.img.w > 0) {
+        if (fontSpecs[name]["file"].type == Json::String) {
+            if (ttf(fontSpecs[name], f)) {
+                measureInk(f);
+                id = (int)skin.fonts.size();
+                skin.fonts.push_back(std::move(f));
+                skin.fontNames.push_back(name);
+            } else {
+                err += "cannot load font " + name + "\n";
+            }
+        } else if (decode("fonts/" + name + ".png", f.img) && f.img.w > 0) {
             std::vector<int> marks;
             for (int x = 0; x < f.img.w; ++x)
                 if (f.img.px[x] >> 24) marks.push_back(x);
@@ -400,6 +581,7 @@ struct Loader {
                 f.height = f.img.h;
                 for (int i = 0; i < 256; ++i) { f.x[i] = i * cw; f.w[i] = cw; }
             }
+            for (int i = 0; i < 256; ++i) f.adv[i] = f.w[i] * 64;
             uint64_t sum[3] = {0, 0, 0}, n = 0;
             for (size_t i = (size_t)f.top * f.img.w; i < f.img.px.size(); ++i) {
                 uint32_t p = f.img.px[i];
@@ -407,6 +589,7 @@ struct Loader {
                 sum[0] += p >> 16 & 255; sum[1] += p >> 8 & 255; sum[2] += p & 255; ++n;
             }
             if (n) f.colour = 0xff000000u | (uint32_t)(sum[0] / n) << 16 | (uint32_t)(sum[1] / n) << 8 | (uint32_t)(sum[2] / n);
+            measureInk(f);
             id = (int)skin.fonts.size();
             skin.fonts.push_back(std::move(f));
             skin.fontNames.push_back(name);
@@ -477,13 +660,55 @@ struct Loader {
         return c;
     }
 
+    // "alt+f", "shift+1", "ctrl+alt+escape": the modifiers in any order, then one letter, one digit or
+    // one Key name. False when nothing names a key, so a typo drops that binding rather than the skin.
+    // On macOS "ctrl" is Command, which is the modifier mac.mm already reports as ctrl.
+    static bool chord(const std::string& s, Binding& b) {
+        size_t at = 0;
+        while (at < s.size()) {
+            size_t plus = s.find('+', at);
+            std::string tok = s.substr(at, plus == std::string::npos ? std::string::npos : plus - at);
+            for (char& c : tok) c = (char)std::tolower((unsigned char)c);
+            at = plus == std::string::npos ? s.size() : plus + 1;
+            if (tok == "shift") b.shift = true;
+            else if (tok == "ctrl" || tok == "cmd") b.ctrl = true;
+            else if (tok == "alt" || tok == "opt" || tok == "option") b.alt = true;
+            else if (tok.size() == 1 && (std::isalpha((unsigned char)tok[0]) || std::isdigit((unsigned char)tok[0])))
+                b.ch = (unsigned char)std::toupper((unsigned char)tok[0]);
+            else if (tok == "left") b.key = KeyLeft;
+            else if (tok == "right") b.key = KeyRight;
+            else if (tok == "up") b.key = KeyUp;
+            else if (tok == "down") b.key = KeyDown;
+            else if (tok == "home") b.key = KeyHome;
+            else if (tok == "end") b.key = KeyEnd;
+            else if (tok == "backspace") b.key = KeyBackspace;
+            else if (tok == "delete") b.key = KeyDelete;
+            else if (tok == "enter") b.key = KeyEnter;
+            else if (tok == "escape") b.key = KeyEscape;
+            else if (tok == "tab") b.key = KeyTab;
+            else return false;
+        }
+        return b.ch != 0 || b.key != KeyNone;
+    }
+
     static Action action(const Json& a) {
         Action r;
         if (a.has("value")) {   // a radio button, and with a goto a chooser that then shows that view
             r.type = Action::Value; r.amount = a["value"].num(); r.target = a["goto"].str(); r.stack = a["stack"].str(); r.vars = vars(a["vars"]);
+            r.set = vars(a["set"]);
         }
-        else if (a.has("goto")) { r.type = Action::Goto; r.target = a["goto"].str(); r.stack = a["stack"].str(); r.vars = vars(a["vars"]); }
+        else if (a.has("goto")) {
+            r.type = Action::Goto; r.target = a["goto"].str(); r.stack = a["stack"].str(); r.vars = vars(a["vars"]);
+            r.set = vars(a["set"]);   // skin-wide vars it sets as well, so one button picks an operator and opens its page
+        }
         else if (a.has("set")) { r.type = Action::Set; r.vars = vars(a["set"]); }
+        else if (a.has("cycle")) {   // { "cycle": { "layer": ["v", "u"] } }: that var to its next value, wrapping
+            r.type = Action::Cycle;
+            if (const Json& c = a["cycle"]; !c.members.empty()) {
+                r.target = c.members[0].first;
+                for (auto& v : c.members[0].second.items) r.values.push_back(valueText(v));
+            }
+        }
         else if (a.has("toggle")) { r.type = Action::Toggle; r.target = a["toggle"].str(); }
         else if (a.has("url")) { r.type = Action::Url; r.target = a["url"].str(); }
         else if (a.has("standalone")) { r.type = Action::Standalone; r.target = a["standalone"].str(); }
@@ -498,6 +723,7 @@ struct Loader {
         }
         else if (a.has("step")) { r.type = Action::Step; r.amount = a["step"].num(); }
         else if (a.has("midi_map")) { r.type = Action::MidiMap; r.target = a["midi_map"].str(); }
+        else if (a.has("modal")) { r.type = Action::Modal; r.target = a["modal"].str(); r.vars = vars(a["data"]); }
         else if (a.has("data")) { r.type = Action::Data; r.vars = vars(a["data"]); }
         else if (a.has("presets")) {
             r.type = Action::Presets;
@@ -524,6 +750,7 @@ struct Loader {
             item.separator = it["separator"].flag();
             item.label = it["label"].str();
             item.shortLabel = it["short"].str(item.label);
+            item.disabled = it["disabled"].flag();
             item.value = it["value"].num();
             item.check = it["check"].flag();
             item.columnBreak = it["columnBreak"].flag();
@@ -546,7 +773,7 @@ struct Loader {
         else { w.kind = Kind::Custom; w.customKind = type; }   // unknown types draw their fill, like unknown custom kinds
         w.name = j["name"].str();
         const Json& r = j["rect"];
-        w.rect = {r[0].integer(), r[1].integer(), r[2].integer(), r[3].integer()};
+        w.rect = rect(r);
         w.layer = std::clamp(j["layer"].integer(3), 0, 7);
         w.surface = j["surface"].flag(true);
         w.hidden = j["hidden"].flag();
@@ -567,7 +794,7 @@ struct Loader {
         w.value = j["value"].num();
         w.fill = fill(j["fill"]);
         w.text = text(j["text"]);
-        for (int i = 0; i < 4; ++i) w.pad[i] = j["pad"][i].integer();
+        for (int i = 0; i < 4; ++i) w.pad[i] = px(j["pad"][i].num());
         w.toggle = j["toggle"].flag();
         w.hoverTiles = j["hoverTiles"].flag();
         w.pressedTiles = j["pressedTiles"].flag();
@@ -575,15 +802,16 @@ struct Loader {
         w.captionFromItem = j["captionFromItem"].flag();
         std::string press = j["press"].str();
         w.press = press == "momentary" ? PressMomentary : press == "repeat" ? PressRepeat : press == "up" ? PressUp : PressDown;
-        w.pressOffset[0] = j["pressOffset"][0].integer();
-        w.pressOffset[1] = j["pressOffset"][1].integer();
+        w.pressOffset[0] = px(j["pressOffset"][0].num());
+        w.pressOffset[1] = px(j["pressOffset"][1].num());
         w.action = action(j["action"]);
         w.items = items(j["items"]);
         w.context = items(j["context"]);
+        w.itemsData = j["itemsData"].str();
         w.menuStyle = j["menuStyle"].str();
         w.hasMenuAt = j.has("menuAt");
-        w.menuAt[0] = j["menuAt"][0].integer();
-        w.menuAt[1] = j["menuAt"][1].integer();
+        w.menuAt[0] = px(j["menuAt"][0].num());
+        w.menuAt[1] = px(j["menuAt"][1].num());
         w.image = image(j["image"].str());
         std::string drag = j["drag"].str();
         w.drag = drag == "absolute" ? DragAbsolute : drag == "rotary" ? DragRotary : DragLinear;
@@ -595,7 +823,7 @@ struct Loader {
         w.wheel = j["wheel"].num(w.kind == Kind::Dial ? 0.05 : 0);
         const Json& reset = j["reset"];
         w.reset = reset.type == Json::Bool && !reset.b ? Widget::ResetNone : reset.str() == "zero" ? Widget::ResetZero : Widget::ResetDefault;
-        w.margin = j["margin"].integer();
+        w.margin = px(j["margin"].num());
         w.rangeMin = j["range"][0].num(0);
         w.rangeMax = j["range"][1].num(1);
         w.hasRange = j.has("range");
@@ -622,12 +850,12 @@ struct Loader {
         w.header = text(j["header"]);
         w.row = text(j["row"]);
         w.selectRow = text(j["selectRow"]);
-        w.rowHeight = j["rowHeight"].integer();
-        w.rowGap = j["rowGap"].integer();
-        w.colGap = j["colGap"].integer();
+        w.rowHeight = px(j["rowHeight"].num());
+        w.rowGap = px(j["rowGap"].num());
+        w.colGap = px(j["colGap"].num());
         for (auto& c : j["columns"].items) {
             std::string a = c["align"].str();
-            w.columns.push_back({c["width"].integer(), a == "center" ? 1 : a == "right" ? 2 : 0, c["edit"].str() == "int", image(c["image"].str())});
+            w.columns.push_back({px(c["width"].num()), a == "center" ? 1 : a == "right" ? 2 : 0, c["edit"].str() == "int", image(c["image"].str()), c["tileCell"].flag()});
         }
         for (auto& f : j["fixed"].items) w.fixed.push_back({f["param"].str(), f["label"].str(), f["ccParam"].str()});
         for (auto& row : j["rows"].items) {
@@ -649,7 +877,7 @@ struct Loader {
         if (sc.type == Json::Object) {
             w.scroll.track = image(sc["track"].str());
             w.scroll.thumb = image(sc["thumb"].str());
-            w.scroll.width = std::max(1, sc["width"].integer(skin.dp(12)));
+            w.scroll.width = std::max(1, sc.has("width") ? px(sc["width"].num()) : skin.dp(12));
             w.scroll.always = sc["always"].flag();
             w.scroll.follow = sc["follow"].flag();
             w.scroll.reveal = sc["reveal"].flag();
@@ -661,10 +889,15 @@ struct Loader {
         w.count = std::clamp(j["count"].integer(61), 0, 128);
         w.velocity = std::clamp(j["velocity"].integer(0), 0, 127);
         w.glide = j["glide"].flag(true);
-        static const char* keyNames[9] = {"c", "d", "e", "f", "g", "a", "b", "black", "top"};
-        for (int i = 0; i < 9; ++i) w.keyImages[i] = image(j["keyImages"][keyNames[i]].str());
+        static const char* keyNames[10] = {"c", "d", "e", "f", "g", "a", "b", "black", "top", "low"};
+        for (int i = 0; i < 10; ++i) w.keyImages[i] = image(j["keyImages"][keyNames[i]].str());
         if (w.kind == Kind::Custom) {   // custom kinds read their own fields; their images and fonts load here
             w.json = j;
+            for (auto& m : w.json.members)   // the fields in pixels, at the load's scale
+                if (m.first == "handle" || m.first == "handleOffset" || m.first == "scaleRect") {
+                    if (m.second.type == Json::Number) m.second.n = px(m.second.n);
+                    for (auto& v : m.second.items) v.n = px(v.n);
+                }
             for (const char* f : {"image", "image2", "track", "thumb"}) image(j[f].str());
         }
         if (w.kind == Kind::List) w.json = j;   // a chooser list's "values", "first" and "set"
@@ -673,8 +906,9 @@ struct Loader {
 
     // A menu style: the fields present in j over base; "hoverBand": null removes the band.
     MenuStyle menuStyle(const Json& j, MenuStyle m) {
-        auto pad = [](const Json& p, int* out) {
-            for (int i = 0; i < 4 && p.type == Json::Array; ++i) out[i] = std::max(0, p[i].integer(out[i]));
+        auto pad = [&](const Json& p, int* out) {   // given in pixels at 1x, unlike the defaults
+            for (int i = 0; i < 4 && p.type == Json::Array; ++i)
+                if (p[i].type == Json::Number) out[i] = std::max(0, px(p[i].n));
         };
         if (j.has("font")) m.font = font(j["font"].str());
         if (j.has("hoverFont")) m.hoverFont = font(j["hoverFont"].str());
@@ -686,8 +920,8 @@ struct Loader {
         m.shadow = colour(j["shadow"].str(), m.shadow);
         for (auto& kv : j.members)
             if (kv.first == "hoverBand") m.hoverBand = kv.second.type == Json::Null ? 0 : colour(kv.second.str(), m.hoverBand);
-        m.rowHeight = std::max(1, j["rowHeight"].integer(m.rowHeight));
-        m.separatorHeight = std::max(1, j["separatorHeight"].integer(m.separatorHeight));
+        if (j.has("rowHeight")) m.rowHeight = std::max(1, px(j["rowHeight"].num()));
+        if (j.has("separatorHeight")) m.separatorHeight = std::max(1, px(j["separatorHeight"].num()));
         pad(j["pad"], m.pad);
         if (j.has("check")) m.check = image(j["check"].str());
         if (j.has("arrow")) m.arrow = image(j["arrow"].str());
@@ -699,8 +933,10 @@ struct Loader {
     }
 };
 
-std::shared_ptr<Skin> loadFiles(const Files& files, std::string* error) {
+std::shared_ptr<Skin> loadFiles(std::shared_ptr<const Files> all, std::string* error, double scale = 1) {
+    const Files& files = *all;
     auto skin = std::make_shared<Skin>();
+    skin->files = all;
     auto get = [&](const std::string& path, Json& out) -> bool {
         auto f = files.find(path);
         std::string e;
@@ -713,7 +949,10 @@ std::shared_ptr<Skin> loadFiles(const Files& files, std::string* error) {
     if (!get("skin.json", sj)) return nullptr;
     skin->name = sj["name"].str();
     skin->root = sj["root"].str("main");
-    skin->density = std::clamp(sj["density"].num(1), 0.25, 8.0);
+    skin->scale = scale;
+    skin->density = std::clamp(sj["density"].num(1), 0.25, 8.0) * scale;
+    for (auto& s : sj["scales"].items)
+        if (s.num() > 0) skin->scales.push_back(s.num());
     skin->vars = Loader::vars(sj["vars"]);
     if (files.count("params.json") && !get("params.json", pj)) return nullptr;
     for (auto& p : pj.items) {
@@ -734,9 +973,10 @@ std::shared_ptr<Skin> loadFiles(const Files& files, std::string* error) {
         d.hostId = h & 0x7fffffff;
         skin->params.push_back(std::move(d));
     }
-    Loader ld{files, *skin, sj["images"], {}, {}, {}};
-    auto pad = [](const Json& j, int* out) {
-        for (int i = 0; i < 4 && j.type == Json::Array; ++i) out[i] = std::max(0, j[i].integer(out[i]));
+    Loader ld{files, *skin, sj["images"], sj["fonts"], scale, {}, {}, {}};
+    auto pad = [&](const Json& j, int* out) {   // given in pixels at 1x, unlike the defaults
+        for (int i = 0; i < 4 && j.type == Json::Array; ++i)
+            if (j[i].type == Json::Number) out[i] = std::max(0, ld.px(j[i].n));
     };
     if (const Json& mj = sj["menu"]; mj.type == Json::Object) {
         MenuStyle base;   // the defaults are in design pixels
@@ -780,17 +1020,46 @@ std::shared_ptr<Skin> loadFiles(const Files& files, std::string* error) {
         if (!get(path, vj)) return nullptr;
         View v;
         v.name = path.substr(6, path.size() - 11);
-        v.w = vj["size"][0].integer();
-        v.h = vj["size"][1].integer();
+        v.w = ld.px(vj["size"][0].num());
+        v.h = ld.px(vj["size"][1].num());
         v.flow = vj["flow"].str() == "column";
         v.fit = vj["fit"].flag();
-        v.gap = vj["gap"].integer();
-        v.animate = std::max(0, vj["animate"].integer());
+        v.gap = ld.px(vj["gap"].num());
+        v.animate = std::max(0, ld.px(vj["animate"].num()));
         v.fill = ld.fill(vj["fill"]);
         for (auto& wj : vj["widgets"].items) v.widgets.push_back(ld.widget(wj));
         for (int i = 0; i < (int)v.widgets.size(); ++i) v.order.push_back(i);
         std::stable_sort(v.order.begin(), v.order.end(), [&](int a, int b) { return v.widgets[a].layer < v.widgets[b].layer; });
         skin->views[v.name] = std::move(v);
+    }
+    // A modal: the root view ends with a veil over the whole window and an embed that shows the modal's
+    // view, both hidden until the text data under kModalKey names one (editor.cpp, syncModal).
+    skin->modalVeil = Loader::colour(sj["modal"]["veil"].str(), skin->modalVeil);
+    skin->closeModal = sj["close"]["modal"].str();
+    skin->closeIf = Loader::cond(sj["close"]["if"]);
+    skin->settingsView = sj["standalone"]["settings"].str();
+    for (auto& kj : sj["keys"].items) {   // "keys": [ { "chord": "alt+f", "goto": ..., "stack": ... }, ... ]
+        Binding b;
+        if (!Loader::chord(kj["chord"].str(), b)) continue;   // an unreadable chord is dropped, not fatal
+        b.action = Loader::action(kj);
+        if (b.action.type != Action::None) skin->keys.push_back(std::move(b));
+    }
+    if (auto root = skin->views.find(skin->root); root != skin->views.end()) {
+        View& v = root->second;
+        Widget veil, box;
+        veil.kind = Kind::Veil;
+        veil.name = kModalVeil;
+        veil.fill.hasColour = true;
+        veil.fill.colour = skin->modalVeil;
+        box.kind = Kind::Embed;
+        box.name = kModalBox;
+        for (Widget* w : {&veil, &box}) {
+            w->layer = 7;
+            w->hidden = true;
+            w->surface = false;
+            v.order.push_back((int)v.widgets.size());   // last in the top layer: over everything, the About box too
+            v.widgets.push_back(*w);
+        }
     }
     for (auto& fj : sj["fonts"].members) {   // text entry colours per font
         int id = ld.font(fj.first);
@@ -857,8 +1126,15 @@ Files readDir(const std::string& dir) {
 } // namespace
 
 std::shared_ptr<Skin> loadSkinDir(const std::string& dir, std::string* error) {
-    auto skin = loadFiles(readDir(dir), error);
+    auto skin = loadFiles(std::make_shared<Files>(readDir(dir)), error);
     if (skin) skin->dir = dir;
+    return skin;
+}
+
+std::shared_ptr<Skin> scaledSkin(const Skin& base, double scale, std::string* error) {
+    if (!base.files) return nullptr;
+    auto skin = loadFiles(base.files, error, scale);
+    if (skin) skin->dir = base.dir;
     return skin;
 }
 
@@ -883,8 +1159,8 @@ std::shared_ptr<Skin> loadSkin() {
         if (auto s = loadSkinDir(env, &err)) return s;
         std::fprintf(stderr, "hollow: HOLLOW_SKIN_DIR %s: %s", env, err.c_str());
     }
-    Files files;
-    for (size_t i = 0; i < kSkinFileCount; ++i) files[kSkinFiles[i].path].assign((const char*)kSkinFiles[i].data, kSkinFiles[i].size);
+    auto files = std::make_shared<Files>();
+    for (size_t i = 0; i < kSkinFileCount; ++i) (*files)[kSkinFiles[i].path].assign((const char*)kSkinFiles[i].data, kSkinFiles[i].size);
     auto skin = loadFiles(files, &err);
     if (!skin) skin = std::make_shared<Skin>();   // an empty skin still opens, as a blank window
     if (env && *env) skin->dir = env;              // keep watching the folder until it loads

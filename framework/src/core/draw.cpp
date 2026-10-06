@@ -148,6 +148,11 @@ static unsigned nextCode(const std::string& s, size_t& i) {
     return cp < 256 ? cp : '?';
 }
 
+int textTop(const Font& f, int h, int lines) {
+    int top = f.ink0, bottom = f.height * (lines - 1) + f.ink1;   // the block's first and last ink row
+    return (h - 1 - top - bottom) / 2;
+}
+
 void drawText(Canvas& c, const Font& f, const std::string& s, Rect r, int align, int valign, bool multiline) {
     std::vector<std::string> lines(1);
     for (size_t i = 0; i < s.size(); ++i) {
@@ -157,18 +162,27 @@ void drawText(Canvas& c, const Font& f, const std::string& s, Rect r, int align,
         if (!multiline) break;
         lines.emplace_back();
     }
-    int total = f.height * (int)lines.size();
-    int dy = valign == 1 ? (r.h - total) / 2 : valign == 2 ? r.h - total : 0;
+    // Middle and bottom go by the cap band rather than the glyph box: a picture font's blank rows
+    // above the capitals and below the descenders are lopsided, and centring the box hands that
+    // lopsidedness to every dropdown and value field. Top is left alone, since a skin that aligns to
+    // the top of a rect is placing the box itself.
+    int n = (int)lines.size();
+    int dy = valign == 1 ? textTop(f, r.h, n) : valign == 2 ? r.h - 1 - (f.height * (n - 1) + f.ink1) : 0;
+    // Lines are clipped to r's bottom, so that text too tall for its rect is cut rather than drawn
+    // over its neighbours - but never so tightly that the first line loses its own descenders, which
+    // sit below the band the rect was sized around.
+    int ymax = std::max(r.y + r.h, r.y + dy + f.height);
     Rect saved = c.clip;
     for (auto& line : lines) {
         int tw = f.width(line);
         int dx = align == 1 ? (r.w - tw) / 2 : align == 2 ? r.w - tw : 0;
-        c.clip = saved & Rect{r.x + dx, r.y + dy, r.w - dx, r.h - dy};
-        int x = r.x + dx;
-        for (size_t i = 0; i < line.size() && x < c.clip.x + c.clip.w;) {
+        c.clip = saved & Rect{r.x + dx, r.y + dy, r.w - dx, ymax - r.y - dy};
+        int x0 = r.x + dx, pen = 0;   // pen in 1/64 px, so fractional advances add up
+        for (size_t i = 0; i < line.size() && x0 + (pen >> 6) < c.clip.x + c.clip.w;) {
             unsigned g = nextCode(line, i);
+            int x = x0 + ((pen + 32) >> 6) + f.ox[g];
             blit(c, f.img, {f.x[g], f.top, f.w[g], f.height}, {x, r.y + dy, f.w[g], f.height}, c.clip);
-            x += f.w[g];
+            pen += f.adv[g];
         }
         dy += f.height;
     }

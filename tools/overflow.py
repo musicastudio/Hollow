@@ -1,6 +1,7 @@
 """Finds text that does not fit its widget in a Hollow skin: static captions, every choice of a dropdown,
 every label (or the widest number) a number field can show, and list cells. Widths come from the skin's
-own font strips, the way the runtime measures them (Font::width), against the widget's rect less its pad.
+own fonts, the way the runtime measures them (Font::width): a picture font's strip, or a TrueType font of
+skin.json "fonts" by its advances at its size plus its tracking, against the widget's rect less its pad, at 1x.
 
     python tools/overflow.py [skin dir]      (FSVR's skin by default; prints one line per overflow)
 """
@@ -15,6 +16,16 @@ from PIL import Image
 
 def fonts(skin):
     out = {}
+    specs = json.load(open(os.path.join(skin, "skin.json"), encoding="utf-8")).get("fonts", {})
+    for name, spec in specs.items():   # TrueType: the runtime's advances in 1/64 px, its box the ASCII ink's
+        if not isinstance(spec, dict) or "file" not in spec:
+            continue
+        from PIL import ImageFont
+        f = ImageFont.truetype(os.path.join(skin, "fonts", spec["file"]), spec.get("size", 12))
+        adv = [0 if c < 32 or 127 <= c < 160 else round((f.getlength(chr(c)) + spec.get("tracking", 0)) * 64) / 64 for c in range(256)]
+        top = min(f.getbbox(chr(c), anchor="ls")[1] for c in range(33, 127))
+        bottom = max(f.getbbox(chr(c), anchor="ls")[3] for c in range(33, 127))
+        out[name] = (adv, bottom - top + max(0, (spec.get("shadow") or {}).get("offset", [0, 0])[1]))
     for path in glob.glob(os.path.join(skin, "fonts", "*.png")):
         a = np.asarray(Image.open(path).convert("RGBA"))[:, :, 3]
         marks = np.nonzero(a[0])[0]
@@ -27,7 +38,7 @@ def fonts(skin):
 
 
 def width(font, s):
-    return sum(font[0][ord(c) if ord(c) < 256 else 63] for c in s)
+    return round(sum(font[0][ord(c) if ord(c) < 256 else 63] for c in s))
 
 
 def fmt(f, v):

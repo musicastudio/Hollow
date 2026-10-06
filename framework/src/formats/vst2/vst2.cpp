@@ -4,6 +4,7 @@
 // On 32-bit Windows the same DLL is also the DXi (formats/dxi), which hosts this AEffect.
 #include <vst2.h>
 #include <hollow/hollow.h>
+#include "../vst_keys.h"
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -168,6 +169,18 @@ struct Effect final : Editor::Host {
             case effEditIdle:
                 if (redisplay.exchange(false)) call(audioMasterUpdateDisplay);
                 return 1;
+            // A host that keeps the keyboard to itself may offer keys only here, and reads 0 as "not the plug-in's" and then acts on the key itself. idx is
+            // the ASCII character, val a VstVirtualKey, opt the VstModifierKey bits.
+            case effEditKeyDown: {
+                keyLog("effEditKeyDown idx=%d val=%d opt=%g editor=%d", (int)idx, (int)val, (double)opt, editor ? 1 : 0);
+                if (!editor) return 0;
+                const int mods = (int)opt;
+                return editor->key(vstVirtualKey((int)val), (unsigned)idx, (mods & kVstModShift) != 0,
+                                   (mods & (kVstModControl | kVstModCommand)) != 0, (mods & kVstModAlternate) != 0)
+                           ? 1 : 0;
+            }
+            case effEditKeyUp: return 0;   // nothing in the editor acts on a release
+            case effKeysRequired: return 0;   // inverted by convention: 0 means the editor wants keys
             case effGetChunk:
                 if (!ptr) return 0;
                 proc->saving();

@@ -1,9 +1,11 @@
-// hollow-render <skin_dir> <view> <out.png>: renders one view of a skin folder, as the runtime
-// draws it at scale 1 with every value at its default.
+// hollow-render <skin_dir> <view> <out.png> [state file] [--scale s]: renders one view of a skin folder, as
+// the runtime draws it with every value at its default (or the state's), at 1x or one of the skin's scales.
 #include "core/core.h"
 #include "embedded_skin.h"
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
+#include <string>
 #include <iterator>
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
@@ -24,8 +26,13 @@ const size_t kSkinFileCount = 0;
 }
 
 int main(int argc, char** argv) {
+    double scale = 0;
+    if (argc >= 6 && std::string(argv[argc - 2]) == "--scale") {
+        scale = std::atof(argv[argc - 1]);
+        argc -= 2;
+    }
     if (argc != 4 && argc != 5) {
-        std::fprintf(stderr, "usage: hollow-render <skin_dir> <view> <out.png> [state file]\n");
+        std::fprintf(stderr, "usage: hollow-render <skin_dir> <view> <out.png> [state file] [--scale s]\n");
         return 2;
     }
     std::string err;
@@ -39,7 +46,7 @@ int main(int argc, char** argv) {
         std::ifstream f(argv[4], std::ios::binary);
         state.assign(std::istreambuf_iterator<char>(f), {});
     }
-    if (!hollow::renderView(*skin, argv[2], rgba, w, h, state)) {
+    if (!hollow::renderView(*skin, argv[2], rgba, w, h, state, scale)) {
         std::fprintf(stderr, "no view '%s' in %s\n", argv[2], argv[1]);
         return 1;
     }

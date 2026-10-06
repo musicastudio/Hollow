@@ -8,7 +8,8 @@ skin/
   params.json          host parameters (array)
   views/<view>.json    one file per view
   images/<group>/<name>.png
-  fonts/<font>.png     glyph strips
+  fonts/<font>.png     glyph strips, or the TrueType files skin.json "fonts" names
+  scales/<s>/<group>/<name>.png   the art rendered for another of the skin's "scales", optional
   data/<name>.json     tables custom kinds read (waveforms, presets), optional
 ```
 
@@ -32,6 +33,8 @@ All images are 8-bit RGBA PNG with straight (not premultiplied) alpha. Names are
 - `root`: the view the editor window shows; its size is the window size at scale 1.
 - `vars` (optional): variables visible to every view (see Variables), e.g. `{ "part": "p1" }`. Buttons change them with a `set` action.
 - `density` (default 1): the skin's pixels per unit of the runtime's own geometry. Everything the skin states (rects, pads, slices, fonts, artwork) is in the skin's own pixels; `density` scales what the runtime supplies itself: the drawings of the custom kinds (the FM matrix wires, envelope and key scaling editors, pad handles, the piano's key-art offsets, scope line widths), menu and tooltip chrome (borders, shadows, check marks, arrows, the tooltip's offset), the defaults of pixel fields (menu `rowHeight`, `separatorHeight` and `pad`, tooltip `pad`, scroll `width`, morph `handle`, envelope `handleOffset`, key scaling `scaleRect`), and drag rates, which stay per design pixel so a denser skin drags at the same speed on screen. Built-in sizes round half away from zero and lines are `round(density)` px wide.
+- `scales` (optional): the window scales the skin is drawn at, each at its own resolution (see Scale), e.g. `[0.5, 0.75, 1, 1.5, 2]`.
+- `fonts` (optional): the TrueType fonts by name (see Fonts), and any font's text entry colours.
 - `images`: metadata only for images that need it. An image without an entry is one tile, no slicing.
   - `tiles` (default 1): the image is a strip of equal tiles (animation or state frames).
   - `axis` (default `"y"`): `"y"` = tiles stacked top to bottom, `"x"` = side by side. Tile `i` of `n` in a `w x h` image is `(0, i*h/n, w, h/n)` for `"y"` and `(i*w/n, 0, w/n, h)` for `"x"`. A requested tile index is clamped to `0..n-1`.
@@ -132,12 +135,13 @@ Button state tile: the strip is laid out as groups `[normal][pressed, if pressed
 `press` says when a button acts: `"down"` (default: acts and toggles on mouse down), `"momentary"` (acts on down and again on release, value returns to 0 on release), `"repeat"` (like momentary and repeats every 100 ms while held after a 400 ms delay), `"up"` (standard push button: acts once on release inside). `pressOffset` `[dx, dy]` shifts the text while pressed.
 
 `action` (buttons only, optional; runs when the button acts):
-- `{ "goto": "page_arp", "stack": "pages", "vars": { "op": "b" } }`: set the embed named `stack` (searched from the root view down) to show view `goto` with those `vars`. A button with `goto` draws as on (value 1) while that embed shows that view and every var the button lists has that value (vars it does not list are ignored), and off otherwise, so navigation buttons light up by themselves.
+- `{ "goto": "page_arp", "stack": "pages", "vars": { "op": "b" } }`: set the embed named `stack` (searched from the root view down) to show view `goto` with those `vars`. A button with `goto` draws as on (value 1) while that embed shows that view and every var the button lists has that value (vars it does not list are ignored), and off otherwise, so navigation buttons light up by themselves. `"set": { "op": "3" }` beside it sets skin-wide vars first, as a `set` action would, and the button is on only while they hold those values too: one button that picks something every view shares and opens its page.
 - `{ "set": { "timbre": "br" } }`: set skin-wide `vars`. The button draws as on while every listed var has that value.
 - `{ "toggle": "about_box" }`: flip `hidden` on the widget with that name (searched in the same view first, then from the root).
 - `{ "url": "https://example.com" }`: open in the browser.
-- `{ "standalone": "settings" }`: open the standalone app's own audio and MIDI settings (clap-wrapper's device window). A menu item with it is listed only in the standalone, and only where that app has such a window (Windows and macOS), so a File menu can carry it in every format.
-- `{ "scale": "menu" }`: open the window scale menu (1x to 4x) under the widget, the one a right-click on empty space opens.
+- `{ "standalone": "settings" }`: open the standalone app's own audio and MIDI settings (clap-wrapper's device window), or with skin.json `"standalone": { "settings": "<view>" }` that view as a modal where the platform can read the window (Windows; see Modals). A menu item with it is listed only in the standalone, and only where that app has such a window (Windows and macOS), so a File menu can carry it in every format. `{ "standalone": "close" }` closes the standalone without asking.
+- `{ "modal": "<view>", "data": { "<key>": "<text>" } }`: store the text data first (keys may use `{var}`), then show that view as the modal; `"modal": ""` closes it. See Modals.
+- `{ "scale": "menu" }`: open the window scale menu under the widget: the skin's `"scales"`, else 1x to 4x. A right-click on empty space opens nothing, so a skin that wants the scales offers them with this.
 - `{ "sequence": "insert", "prefix": "arp.step.", "index": "{step}", "count": 32 }` (or `"delete"`): treats params named `<prefix><n>.<leaf>` for n = 1..count as a step sequence. Insert moves steps index..count-1 one place up (the last is dropped) and resets step index to its defaults; delete moves steps index+1..count one place down and resets step count. `index` may use `{var}`.
 - `{ "sequence": "reset" | "random", "prefix": "arp.step.", "leaf": "on", "count": 32 }`: sets `<prefix><n>.<leaf>` for n = 1..count to its default, or to random valid values (for a step sequencer's rows).
 - `{ "presets": "<table>", "key": "env.{op}", "name": "<text key>", "save": true, "columns": 16 }`: a native menu of the preset slots of `data/<table>.json` (kept, once changed, in text data `presets.<table>`), `columns` items per column. Choosing a slot copies its content into text data `key` and its name into text data `name`; with `save` the menu also offers storing the current content and name into a slot.
@@ -155,7 +159,7 @@ Button state tile: the strip is laid out as groups `[normal][pressed, if pressed
 
 `meter` and `number`: `range` `[min, max]` as for dial; a `number` bound to a param keeps what a drag sets inside its `range` (for a readout of part of a wide param). A `number`'s `"valueText"` replaces the formatted value with text: `{ "table": "<data table>", "row": 3, "col": "<param id>", "first": 0 }` shows the table's cell `[row][col]`, where each of `row` and `col` is a fixed index, a param whose value is the index (`{var}`s allowed), or, left out, the widget's own value less `first`; an empty or missing cell shows the plain number. `{ "scale": 0.1, "format": "%.1f" }` shows the value times `scale` instead. `number` `format` defaults to the param's format. A `number`'s `sensitivity` is in value units per pixel of vertical drag (default: a full range per 200 px), and Shift applies `fine`.
 
-`plot` field `"draw"`: `"trace"` (default), `"bars"`, `"bars_trace"` or `"centre_bars"`. With no data a trace lies along the bottom row of the rect and bars draw nothing. With `"source": "scope"` the data is what the processor last published with `State::setScope` (up to 256 values, 0..1 the full height): a trace reads the value under each column, bars put one bar per value, centred on its share of the width.
+`plot` field `"draw"`: `"trace"` (default), `"bars"`, `"bars_trace"` or `"centre_bars"`. With `"key": "<text key>"` (`{var}`s allowed) the values are that text data's numbers, 0..1, up to 256 of them, separated by spaces, and the plot redraws when they change. With no data a trace lies along the bottom row of the rect and bars draw nothing. With `"source": "scope"` the data is what the processor last published with `State::setScope` (up to 256 values, 0..1 the full height): a trace reads the value under each column, bars put one bar per value, centred on its share of the width.
 
 `custom` kinds in version 1: `"pad"` (a handle dragged in 2D; `params: [x, y]`), `"morph_pad"` (the same with a quartered grid), `"envelope"` (its colours are fields, for a skin with a dark display: `grid` the tempo grid lines, default `#c3c3c3ff`; `area` the fill under the curve, `#fbffffa5`; `curve` `#888888ff`; `handle` an unselected point's inside, `#fdfdfdff`; `dots` the loop's dotted segment, `#0c0c0cff`; `"keyscale"` takes the same), `"fx_chain"` and `"spectrum"` (draw `fill` only for now), `"piano"` (a keyboard of `count` keys starting at MIDI note `first`, white and black keys, the pressed key highlighted; without a `fill` it draws only the pressed-key highlight over the key art beneath it). Unknown kinds draw `fill` and ignore input, so a newer skin still opens in an older runtime.
 
@@ -181,7 +185,7 @@ These fields extend the tables above. A runtime that predates them ignores them.
 ### Internal params and text data
 
 - A param with `"host": false` is saved with the instance and bindable like any other, but hosts never see it (not listed, not automatable; VST2 indices count host params only). Use it for GUI-side state that must persist, such as sequencer steps, wheel positions or the selected envelope point.
-- Text data in captions: a `plate`, `button` or `dropdown` caption (and a list cell) may hold `{data:<key>|<default>}`, filled with the text data under that key (`{var}`s allowed) or the default until there is some, redrawn as the data changes.
+- Text data in captions: a `plate`, `button` or `dropdown` caption (and a list cell) may hold `{data:<key>|<default>}`, filled with the text data under that key (`{var}`s allowed) or the default until there is some, redrawn as the data changes (a caption within the runtime's next tick).
 - Text data: a `textbox` with `"key": "<key>"` (may contain `{var}`) shows and, when `editable`, edits the string stored under that key in the instance; `"text.text"` is the value shown until one is stored. `custom` kinds that keep shapes (envelopes) store them under their `key` the same way.
 
 ### Conditions
@@ -212,7 +216,7 @@ These fields extend the tables above. A runtime that predates them ignores them.
 
 ### Piano key art
 
-- `piano` field `"keyImages": { "c": "<image>", "d": ..., "e": ..., "f": ..., "g": ..., "a": ..., "b": ..., "black": ..., "top": ... }`: each a two-tile image (normal, pressed). With it, a pressed key is drawn as tile 1 of its image at the key's place (the top C of the range uses `"top"`), instead of a highlight. With `keyImages` the piano draws every key from its image (tile 0, or tile 1 while pressed) at fixed positions, one octave per 130 px.
+- `piano` field `"keyImages": { "c": "<image>", "d": ..., "e": ..., "f": ..., "g": ..., "a": ..., "b": ..., "black": ..., "top": ..., "low": ... }`: each a two-tile image (normal, pressed). With it, a pressed key is drawn as tile 1 of its image at the key's place (the top C of the range uses `"top"`, and the first key, when it is white, `"low"`: an 88-key board's A0, with no black key beside it), instead of a highlight. With `keyImages` the piano draws every key from its image (tile 0, or tile 1 while pressed) at fixed positions, one octave per 130 px.
 
 ### Flow and scrolling
 
@@ -240,10 +244,19 @@ Further `menu` fields:
 - `keys`: `"all"` (default: arrows, Enter, Escape) or `"escape"` (only Escape closes).
 - `styles`: named partial overrides of these fields, e.g. `{ "plain": { "fill": "#fff0ffff", "hoverBand": null } }`. A widget picks one with `"menuStyle": "<name>"`, or `"menuStyle": "native"` for a native menu.
 - On opening, the item for the current value is highlighted.
-- Menu items may also carry: `"items": [...]` (a submenu, opening on hover to the right), `"check": true` (a toggle item showing a check mark), `"short": "<text>"` (the caption shown by `captionFromItem` instead of the label), `"columnBreak": true` (starts a new column, native menus), and `"action": { ... }` (any button action, run when chosen instead of setting the value).
+- Menu items may also carry: `"items": [...]` (a submenu, opening on hover to the right), `"disabled": true` (shown in the style's `disabledFont`, never highlighted or chosen: a heading), `"check": true` (a toggle item showing a check mark), `"short": "<text>"` (the caption shown by `captionFromItem` instead of the label), `"columnBreak": true` (starts a new column, native menus), and `"action": { ... }` (any button action, run when chosen instead of setting the value).
 - `"menuAt": [x, y]` on a dropdown or a `presets` button: the menu opens with its top-left at that point of the view (for example on a neighbouring name field), instead of relative to the widget.
 - Native menus check only `check` items (never the current value), and their column breaks draw no divider line.
 - `"context": [items]` on any widget: right-click (on release) opens a menu of those items at the pointer, in the widget's `menuStyle` (default the named style `"plain"` if it exists).
+
+### Keyboard shortcuts
+
+- `skin.json` `"keys"`: an array of bindings, each a `"chord"` and any action a button can carry. `[{ "chord": "alt+f", "goto": "page_filter", "stack": "pages" }, { "chord": "shift+1", "set": { "part": "p1" } }, { "chord": "alt+u", "cycle": { "layer": ["v", "u"] } }]`.
+- A chord is the modifiers `shift`, `ctrl` and `alt` in any order, then one key: a letter, a digit, or one of `left`, `right`, `up`, `down`, `home`, `end`, `backspace`, `delete`, `enter`, `escape`, `tab`. `cmd` is a synonym for `ctrl`, `opt` and `option` for `alt`. A chord naming no key is dropped and the rest of the skin loads.
+- Letters and digits match the **physical** key, not the character it types, so `shift+1` works where that types `!` and `alt+f` works on macOS where Option+F types `ƒ`. On macOS `ctrl` is Command, the modifier the runtime already reports as ctrl.
+- **A skin with bindings holds the keyboard while its window is up**, so its chords work without clicking the editor first. It consumes only what it has a use for and hands every other key on to the host, so a DAW keeps its own shortcuts. Text entry, an open menu, a focused list and a modal come first and take **every** key, space included, until they are done, so a chord never fires while a name is being typed or a dialog is up. A skin with no `"keys"` behaves as the runtime always did, taking the keyboard only while something in the editor wants it.
+- The `cycle` action sets one var to its next listed value, wrapping past the last; a value outside the list goes to the first. It is the action for a shortcut that flips between states no single button sets.
+- **Tooltips name the shortcut themselves.** A widget whose action a binding also runs shows the chord after its `tip`, as "The filter (Alt+F)", and shows the chord alone when it has no `tip`, so no binding hides. `goto` matches on view, stack and vars, `set` on the vars it writes, and a `cycle` matches any `set` of one of its values, so every button that reaches a state also names the chord that reaches it. Chords read as ASCII on every platform (`Alt+F`, not `⌥F`), since a skin's fonts hold Latin-1 only.
 
 ### Number and text details
 
@@ -257,16 +270,28 @@ Further `menu` fields:
 - `"source"` on a `textbox`, `plate` or `button` shows a value the runtime knows: `"cpu"` (the audio thread's load in percent, as a number through the widget's `format`, e.g. `"%3d%%"`), `"midi_in"` (tile 1 for 200 ms after any incoming MIDI), `"modified"` (tile 1 while the state differs from the last load or save), `"voices"` (the processor's voice count, if it reports one), `"scale"` (the window scale as text, `1x` to `4x`).
 - `"source"` on a `meter`: `"level_l"` or `"level_r"`, the output's peak level on that channel as the format layer measures every block, shown -60 to 0 dB over the meter's range and falling about 54 dB a second.
 - A `list` with `dataRows` redraws whenever the text data its rows come from changes, so a processor can fill a list after it is shown.
+- Text data under a key that starts `live.` is a processor's display data (a plot's points): it is never saved with the instance, and setting it never marks the instance modified.
+- A `matrix_op` box with a `text.font` draws its `letter` over its art, centred on its ink, so the art needs no number in it.
 - `list` field `"source": "midi_map"`: rows are the MIDI learn assignments (below).
+
+### Modals
+
+- The root view gets two widgets at load: a `veil` over the whole window and an `embed` above it, both last in layer 7 and hidden. The text data `hollow.modal` names the view the embed shows, centred, with the veil behind it; `""` or an unknown view hides both. A `modal` action sets it, and so can a processor, from any thread. The window grows to hold the modal (a margin of 16 around it) while a fitted root is smaller, and shrinks back when it closes. A modal takes the keyboard, and Escape closes it. A new editor window starts with none, and the embed is not saved with the GUI state.
+- skin.json `"modal": { "veil": "#rrggbbaa" }`: the veil's colour (default `#00000080`).
+- skin.json `"close": { "modal": "<view>", "if": <condition> }`: in the standalone (Windows), closing its window while the condition holds opens that modal instead. `{ "standalone": "close" }` then closes it without asking, as does a processor's text data `hollow.close` set to `"1"`.
+- skin.json `"standalone": { "settings": "<view>" }`: the modal `{ "standalone": "settings" }` opens. The runtime reads clap-wrapper's settings window into text data and params: for each of `api`, `output`, `input`, `rate` and `buffer`, the lines of `standalone.<list>.items` and the chosen line's index in the param `standalone.<list>` (a dropdown with `itemsData`); `standalone.midi.items` lines are `name` then a tab and `1` for an open input or `0`. Setting a param changes that choice in the app, setting `standalone.midi` to 1 + a row flips that input, and everything is read again. The skin declares the params (`host: false`). Where the window cannot be read, the action opens the app's own window.
+- The skin var `standalone` is `"1"` in the standalone and `"0"` elsewhere, for widgets only the app has.
 
 ### Lists
 
+- `list` field `"contextRow": "<text key>"`: a right-click on a row stores the row's index and its cells, tab-separated, under that key before the list's `context` menu opens; a right-click off the rows opens nothing. The row lights, in place of the list's selection, until its menu and any modal it opened close, and `{cell:n}` in a menu item's label is the row's n-th cell (from 1), so the menu names the row. A column's `"tileCell": true` draws its image's tile numbered by the cell (`"0"`, `"1"`), a lamp per row.
+- `dropdown` field `"itemsData": "<text key>"`: its items are that text data's lines, valued 0, 1, 2 ... in order, for choices only the product knows.
 - A `list` with a `param` is a chooser: clicking row `i` sets the param to `values[i]` (or `first + i`, `first` default 0) and every param its `"set"` names (`{ "<param id>": <plain value> }`, `{var}` allowed, or an array of one value per row) to its value, in one gesture; the selected row is the one whose value and `set` values the params hold, and none while they hold others. A browser column of voices from several banks is a list whose `set` gives each row's bank.
 - `list` fields: `"columns": [{ "width": 33, "align": "right", "edit": "int" }, { "width": 196 }, { "width": 20, "image": "<image>" }]` (an `image` column draws that image centred in each row whose cell is not empty, its tile 1 on the selected row when it has two, instead of the text), `"colGap"`, `"rowHeight"`, `"rowGap"`, `"gapFill"` (colour behind the rows, showing in the gaps), `"rowFill"`, `"selectFill"`, `"selectRow"` (the selected row's text style, for a text that reads on `selectFill`), `"valign"`, `"scroll"` (as for embeds, plus `"always": true` to draw the scrollbar even when not needed), `"rows"` (static rows, arrays of cell strings; a cell `"{data:<key>|<default>}"` shows the text data under that key, `{var}`s allowed, or the default until there is some), `"dataRows": { "key": "<text key>", "row": ["U{n}", "{1}", "{2}"], "param": "<id>", "first": 0, "set": { "<id>": 0 } }` (after the static rows, a row for each line of the text data under `key`, as many as there are: `{1}`, `{2}` ... are the line's tab-separated fields and `{n}` its number from 1; in a bound list a press sets `param`, else the list's, to `first` plus the row's index among them, with `set`), and the row text style in `"row"`. Rows fill down to the bottom even when empty. A click selects a row; double-click on an `"edit": "int"` cell edits it; Delete removes a selected row of a `source` list.
 
 ### MIDI in and MIDI learn
 
-- The piano marks keys held by incoming MIDI as pressed. Its fields: `"velocity"` (a fixed velocity; without it the height on the key decides), `"glide": false` (dragging across keys does not retrigger).
+- The piano marks keys held by incoming MIDI as pressed, each from its note on to its note off. A sustain pedal is not followed: a keyboard showing every key played since the pedal went down says nothing about what is being played. Its fields: `"velocity"` (a fixed velocity; without it the height on the key decides), `"glide": false` (dragging across keys does not retrigger).
 - A dial with `"midi"` also shows incoming MIDI of that kind (pitch bend, CC n): dragging and incoming messages move the same value.
 - MIDI learn: while the internal param named by `skin.json` `"learn": { "param": "gui.midi_learn", "outline": "#ff000099" }` is on, clicking a widget with a host `param` makes it the learn target (drawn with a 1 px outline in that colour on its rect); the next incoming CC is assigned to that param. Assignments are saved with the instance; an assigned CC moves its param. `learn.defaults` (`{ "7": "master.volume", ... }`, CC number to param id) are the assignments a fresh instance starts with. A `"source": "midi_map"` list shows them (`cc | param name`), then its `"fixed"` rows unless already listed: `{ "param": "<id>" }` (that param's assigned CC, or -1) and `{ "label": "<text>", "ccParam": "<internal param>" }` (a row whose CC cell shows and edits that param), its CC cells editable, and its `context` items may use the actions `{ "midi_map": "remove" }` and `{ "midi_map": "reset" }`.
 
@@ -281,11 +306,15 @@ Further `menu` fields:
 
 ## Fonts
 
-A font is a PNG glyph strip holding the 256 characters of Latin-1 (codes 0..255) left to right. If row 0 of the image has exactly 256 pixels with non-zero alpha, it is a marker row: each marked column starts the next glyph, a glyph runs to the next marker (the last one to the right edge), and glyph pixels are rows 1..h-1. Otherwise the font is fixed width: each glyph is `w / 256` wide and `h` tall. Glyphs are drawn as they are coloured in the image (alpha blended). Text is UTF-8; code points above 255 draw as `?`.
+A font is a TrueType file or a PNG glyph strip. `skin.json` `"fonts"` names the TrueType ones: `{ "<font>": { "file": "<a .ttf in fonts/>", "size": <em in px at 1x>, "colour": "#rrggbbaa", "tracking": <px added to every advance>, "shadow": { "colour": "#rrggbbaa", "offset": [dx, dy] } } }`, `caret` and `selection` as for any font (Text entry). The runtime rasterizes its Latin-1 glyphs at the skin's scale when the skin loads, antialiased, the shadow under them, each advance kept to 1/64 px; kerning is not applied. Its box runs from the tallest ASCII ink to the deepest, so a Latin-1 accent above the capitals clips. A widget names it like any font, so a skin moves from strips to TrueType without touching its views.
+
+A glyph strip is a PNG holding the 256 characters of Latin-1 (codes 0..255) left to right. If row 0 of the image has exactly 256 pixels with non-zero alpha, it is a marker row: each marked column starts the next glyph, a glyph runs to the next marker (the last one to the right edge), and glyph pixels are rows 1..h-1. Otherwise the font is fixed width: each glyph is `w / 256` wide and `h` tall. Glyphs are drawn as they are coloured in the image (alpha blended). Text is UTF-8; code points above 255 draw as `?`.
 
 ## Scale
 
-The runtime draws at scale 1 into a buffer and presents it at an integer scale 1..4 with nearest-neighbour pixel replication, so the artwork stays sharp. Right-clicking an empty part of the window offers the scales.
+With `skin.json` `"scales": [0.5, 0.75, 1, 1.5, 2]` the skin is drawn at each scale it lists: the runtime loads it again with every rect, pad, offset, row height, column width, view size, slice band and font size multiplied (rects by their edges, so rects that meet at 1x still meet), its `density` multiplied with them, and each image from `scales/<scale>/<group>/<name>.png` (`scales/0.75/knobs/rotary_large.png`), or, where the skin has no such file, the 1x image resampled tile by tile. Sizes round half away from zero. The window is that load's root view, shown one pixel to one, so every scale is drawn at its own resolution; the session keeps the scale. Picture fonts stay at 1x, so a skin with scales wants TrueType fonts.
+
+Without `"scales"` the runtime draws at scale 1 into a buffer and presents it at an integer scale 1..4 with nearest-neighbour pixel replication, so the artwork stays sharp. A `scale` action offers the scales either way.
 
 ## Live editing
 

@@ -26,7 +26,18 @@ target_link_libraries(hollow-bake PRIVATE ${HOLLOW_CORE_LIBS})
 if(CMAKE_SIZEOF_VOID_P EQUAL 8 AND HOLLOW_FORMATS MATCHES "CLAP")
   include(FetchContent)
   set(CLAP_WRAPPER_DOWNLOAD_DEPENDENCIES ON CACHE BOOL "clap-wrapper downloads the SDKs it needs")
+  # RtAudio builds WASAPI only unless asked for more, and it vendors the ASIO SDK. FORCE because it
+  # declares the flag with option() under cmake_minimum_required(3.10), where CMP0077 is OLD.
+  if(WIN32)
+    option(HOLLOW_STANDALONE_ASIO "Build the standalone's ASIO back end" ON)
+    if(HOLLOW_STANDALONE_ASIO)
+      set(RTAUDIO_API_ASIO ON CACHE BOOL "Build ASIO API" FORCE)
+    endif()
+  endif()
   FetchContent_Declare(clap GIT_REPOSITORY https://github.com/free-audio/clap GIT_TAG 1.2.10 GIT_SHALLOW TRUE)
-  FetchContent_Declare(clap-wrapper GIT_REPOSITORY https://github.com/free-audio/clap-wrapper GIT_TAG v0.16.0 GIT_SHALLOW TRUE)
+  # Ahead of v0.16.0: the standalone's audio and MIDI settings only persist from PR #517, which is
+  # merged onto next but not released. Move back to a tag (v0.17.0?) once one carries it. The sha is
+  # spelled in full because GitHub only serves a shallow fetch of a complete one.
+  FetchContent_Declare(clap-wrapper GIT_REPOSITORY https://github.com/free-audio/clap-wrapper GIT_TAG fb9d6e4770c18d44b5756296810ac3cf121e000c GIT_SHALLOW TRUE)
   FetchContent_MakeAvailable(clap clap-wrapper)
 endif()
