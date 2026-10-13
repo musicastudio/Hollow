@@ -1238,4 +1238,56 @@ await test('references and checks for the new fields', () => {
   assert.ok(msgs.includes('missing param "y.{op}"'));
 });
 
+await test('steppers, onIf, stage_env inputs and stepper plates', () => {
+  const d = {
+    'skin.json': { format: 1, name: 'S', root: 'main', steppers: { width: 9, plates: { 'p/plate': ['b/down', 'b/up'] } } },
+    'params.json': [{ id: 'x.n', name: 'N', min: 0, max: 10, steps: 10 }, { id: 'x.f', name: 'F', min: 0, max: 1 }, { id: 'x.m', name: 'M', min: 0, max: 2, steps: 2 }],
+    'views/main.json': { size: [200, 100], widgets: [
+      { type: 'number', name: 'n', rect: [0, 0, 40, 10], param: 'x.n', fill: { image: 'p/plate' }, pad: [2, 1, 0, 0], range: [0, 3] },
+      { type: 'number', name: 'f', rect: [0, 20, 40, 10], param: 'x.f', fill: { image: 'p/plate' } },
+      { type: 'number', name: 'off', rect: [0, 40, 40, 10], param: 'x.n', fill: { image: 'p/plate' }, stepper: false },
+      { type: 'number', name: 'narrow', rect: [0, 60, 18, 10], param: 'x.n', fill: { image: 'p/plate' } },
+      { type: 'number', name: 'inert', rect: [50, 0, 40, 10], param: 'x.n', fill: { image: 'p/plate' }, drag: false },
+      { type: 'button', name: 'tab', rect: [100, 0, 20, 10], fill: { image: 'b/tab' }, onIf: { param: 'x.m', atLeast: 1 } },
+      { type: 'custom', name: 'eg', rect: [100, 20, 90, 60], kind: 'stage_env', model: 'm', inputs: { L1: 'x.n', T: 0.5 } },
+    ] },
+  };
+  const skin = d['skin.json'], ws = d['views/main.json'].widgets;
+  assert.deepEqual(L.stepperOf(skin, ws[0]), { width: 9, down: 'b/down', up: 'b/up' });
+  assert.deepEqual(L.numberPad(skin, ws[0]), [9, 1, 9, 0]); // the text keeps clear of both buttons
+  assert.equal(L.stepperOf(skin, ws[2]), null); // "stepper": false
+  assert.equal(L.stepperOf(skin, ws[3]), null); // too narrow for both
+  assert.equal(L.stepperOf(skin, ws[4]), null); // takes no input
+  assert.deepEqual(L.numberPad(skin, ws[4]), [0, 0, 0, 0]);
+  assert.equal(L.stepperOf(skin, { ...ws[4], editable: true }).width, 9); // editable is input enough
+  // play: a press on a stepper steps once, then every 100 ms after 400 ms, within the widget's range, and never drags
+  const st = L.playState(d), pc = L.playCtx(d, st, 'main');
+  pc.now = 1000;
+  L.playDown(pc, 39, 5); assert.equal(val(pc, 'n'), 1);
+  L.playMove(pc, 39, -50); assert.equal(val(pc, 'n'), 1);
+  pc.now = 1400; assert.equal(L.playTick(pc), true);
+  pc.now = 1500; L.playTick(pc); pc.now = 1600; L.playTick(pc);
+  assert.equal(val(pc, 'n'), 3); // clamped to range [0, 3]
+  L.playUp(pc, 39, 5);
+  click(pc, 2, 5); assert.equal(val(pc, 'n'), 2);
+  click(pc, 39, 25); assert.ok(Math.abs(val(pc, 'f') - 0.01) < 1e-9); // continuous: a hundredth of the range
+  // onIf lights the button in place of its action
+  assert.equal(L.buttonValue(pc, find(pc, 'tab')), 0);
+  st.values['x.m'] = 2; pc.rebuild();
+  assert.equal(L.buttonValue(pc, find(pc, 'tab')), 1);
+  // inputs keep numbers as numbers; plates need both images
+  assert.deepEqual(L.parseInputs(L.formatInputs(ws[6].inputs)), ws[6].inputs);
+  assert.deepEqual(L.parseInputs('A = op.{op}.l1\nB = -3\nbad\nC ='), { A: 'op.{op}.l1', B: -3 });
+  assert.deepEqual(L.parsePlates(L.formatPlates(skin.steppers.plates)), skin.steppers.plates);
+  assert.equal(L.parsePlates('p/plate = b/down'), undefined);
+  // references: onIf and inputs params, the plates and their buttons
+  const names = kind => L.refs(d).filter(r => r.kind === kind).map(r => r.name);
+  assert.ok(names('param').includes('x.m') && names('param').filter(n => n === 'x.n').length === 5);
+  assert.equal(L.renameRefs(d, 'image', 'p/plate', 'p/box'), 6); // five fills and the plates key
+  assert.deepEqual(skin.steppers.plates, { 'p/box': ['b/down', 'b/up'] });
+  assert.equal(L.renameRefs(d, 'image', 'b/up', 'b/more'), 1);
+  assert.equal(L.renameRefs(d, 'param', 'x.n', 'x.k'), 5);
+  assert.equal(ws[6].inputs.L1, 'x.k');
+});
+
 console.log(process.exitCode ? 'Some tests FAILED' : `All ${count} test groups passed`);

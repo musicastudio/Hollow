@@ -459,6 +459,23 @@ export function parseVars(text) {
   return Object.keys(out).length ? out : undefined;
 }
 export const formatVars = o => Object.entries(o || {}).map(([k, v]) => `${k}=${v}`).join(', ');
+// "name = value" per line into an object, `f` turning each value text into its JSON value (undefined drops the line).
+function parseLines(text, f) {
+  const out = {};
+  for (const line of String(text).split('\n')) {
+    const k = line.indexOf('='), name = line.slice(0, k).trim(), v = k > 0 && name ? f(line.slice(k + 1).trim()) : undefined;
+    if (v !== undefined) out[name] = v;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+const formatLines = (o, f) => Object.entries(isObj(o) ? o : {}).map(([k, v]) => `${k} = ${f(v)}`).join('\n');
+// A stage_env's "inputs", one "name = param id or number" per line. A number stays a JSON number,
+// since the runtime reads a string as a param id.
+export const formatInputs = o => formatLines(o, String);
+export const parseInputs = text => parseLines(text, v => (!v ? undefined : Number.isFinite(+v) ? +v : v));
+// skin.json "steppers" "plates", one "plate image = down image, up image" per line.
+export const formatPlates = o => formatLines(o, v => (Array.isArray(v) ? v.join(', ') : ''));
+export const parsePlates = text => parseLines(text, v => { const a = v.split(',').map(s => s.trim()).filter(Boolean); return a.length === 2 ? a : undefined; });
 
 // Dropdown items, one per line: "label = value", or "-" for a separator. Extra fields of the
 // item at the same position survive (positional, so inserting a line shifts them).
@@ -581,6 +598,13 @@ export function refs(docs) {
       for (const k of ['font', 'hoverFont', 'disabledFont']) add('font', 'skin.json', null, m, k);
       for (const k of ['check', 'arrow']) add('image', 'skin.json', null, m, k);
     }
+    const plates = isObj(skin.steppers?.plates) ? skin.steppers.plates : {};
+    for (const k of Object.keys(plates)) {
+      out.push({ kind: 'image', name: k, path: 'skin.json', widget: null, set: n => {
+        skin.steppers.plates = Object.fromEntries(Object.entries(skin.steppers.plates).map(([a, v]) => [a === k ? n : a, v]));
+      } });
+      if (Array.isArray(plates[k])) { add('image', 'skin.json', null, plates[k], 0); add('image', 'skin.json', null, plates[k], 1); }
+    }
     add('font', 'skin.json', null, skin.tooltip, 'font');
     add('param', 'skin.json', null, skin.learn, 'param');
     for (const k of Object.keys(isObj(skin.fonts) ? skin.fonts : {}))
@@ -607,7 +631,8 @@ export function refs(docs) {
         add('param', path, wn, c, 'param');
         if (c.stack != null) { add('stack', path, wn, c, 'stack'); add('view', path, wn, c, 'view'); }
       };
-      cond(w, 'showIf'); cond(w, 'enableIf');
+      cond(w, 'showIf'); cond(w, 'enableIf'); cond(w, 'onIf');
+      if (isObj(w.inputs)) for (const k of Object.keys(w.inputs)) add('param', path, wn, w.inputs, k);
       if (Array.isArray(w.mirror)) w.mirror.forEach((_, i) => add('param', path, wn, w.mirror, i));
       if (isObj(w.keyImages)) for (const k of Object.keys(w.keyImages)) add('image', path, wn, w.keyImages, k);
       add('image', path, wn, w.scroll, 'track');
@@ -1043,6 +1068,7 @@ function buildNode(ctx, view, owner, x, y, clip, vars, depth) {
     const key = `${n.key}/${w.name ?? '#' + i}`, first = Array.isArray(w.params) && w.params.length ? w.params[0] : w.param;
     const it = { w, i, node: n, key, hidden: key in st.hidden ? st.hidden[key] : !!w.hidden, show: evalCondition(w.showIf, env), text: sub(w.text?.text) };
     it.enabled = n.enabled && !w.disabled && evalCondition(w.enableIf, env);
+    if (w.onIf != null) it.lit = +evalCondition(w.onIf, env);
     it.vis = !it.hidden && it.show;
     it.pid = typeof first === 'string' && first ? sub(first) : null;
     it.p = (it.pid && ctx.pmap.get(it.pid)) || null;
@@ -1244,7 +1270,30 @@ export function actionOn(ctx, it, a) {
   return !!s && s.view === a.goto && sameVars(a.vars, s.vars);
 }
 export const isActive = (ctx, it) => actionOn(ctx, it, it.w.action);
+// skin.json "steppers": a number on one of its plates that takes input gets a down button at its left end
+// and an up button at its right, unless it says "stepper": false or is too narrow for both (Gui::stepperOf).
+export function stepperOf(skin, w, rect = w.rect) {
+  const pair = w.type === 'number' && w.stepper !== false && w.fill?.image && isObj(skin?.steppers?.plates) ? skin.steppers.plates[w.fill.image] : null;
+  const width = Math.max(1, Math.round(+(skin?.steppers?.width ?? 9)) || 1);
+  if (!Array.isArray(pair) || (w.drag === false && !w.editable) || !Array.isArray(rect) || 2 * width >= rect[2]) return null;
+  return { width, down: pair[0], up: pair[1] };
+}
+// A number's pad, widened to keep its text clear of its steppers.
+export function numberPad(skin, w, rect = w.rect) {
+  const pad = [0, 1, 2, 3].map(k => +w.pad?.[k] || 0), s = stepperOf(skin, w, rect);
+  if (s) { pad[0] = Math.max(pad[0], s.width); pad[2] = Math.max(pad[2], s.width); }
+  return pad;
+}
+// One step of a stepped param, else a hundredth of the range, within the widget's range (Gui::stepNumber).
+function stepNumber(st, it, dir) {
+  const r = itemRange(it), g = it.p && Array.isArray(it.w.range) ? it.w.range.map(Number) : null;
+  let lo = Math.min(r.min, r.max), hi = Math.max(r.min, r.max);
+  const unit = (hi - lo) / (r.steps > 0 ? r.steps : 100);
+  if (g) { lo = Math.max(lo, Math.min(...g)); hi = Math.min(hi, Math.max(...g)); }
+  setPlain(st, it, clamp(getPlain(st, it) + dir * unit, lo, hi));
+}
 export function buttonValue(ctx, it) {
+  if (it.lit != null) return it.lit;   // onIf
   if (it.source != null) return it.source;
   const k = actionKind(it.w);
   if (k === 'value') return +(!!it.p && getPlain(ctx.st, it) === +it.w.action.value);   // a radio button: on while its param holds the value
@@ -1570,7 +1619,10 @@ export function playDown(ctx, x, y, { dbl = false, shift = false, right = false 
     const { row, c } = listPick(ctx, it, x, y);
     if (dbl && row && row.cells[c]?.edit === 'int') st.events.push({ edit: it.key, cell: [row.i, c], text: it.rows[row.i].cells[c] ?? '', rect: row.cells[c].rect });
   } else if (w.type === 'custom' && w.kind === 'piano') { st.press = { key: it.key, note: null }; piano(ctx, it, x, y); }
-  else if (w.type === 'dial' || w.type === 'number' || w.type === 'custom') {
+  else if (w.type === 'number' && stepAt(ctx, it, x)) { // a stepper: one step now, more while held (playTick)
+    st.press = { key: it.key, step: stepAt(ctx, it, x), next: ctx.now + 400 };
+    stepNumber(st, it, st.press.step);
+  } else if (w.type === 'dial' || w.type === 'number' || w.type === 'custom') {
     if (dbl && w.type === 'number' && w.editable) st.events.push(editEvent(it, displayText(w, it.p, getPlain(st, it))));
     else if (dbl) {
       const v = w.type === 'custom' ? itemRange(it).def : resetValue(it);
@@ -1594,7 +1646,7 @@ export function playMove(ctx, x, y, { shift = false } = {}) {
     if (!it) st.press = null;
     else if (pr.scroll != null) scrollTo(ctx, it, y - pr.scroll);
     else if (t === 'custom' && it.w.kind === 'piano') piano(ctx, it, x, y);
-    else if (t === 'dial' || t === 'number' || t === 'custom') drag(ctx, it, x, y, shift, false);
+    else if (t === 'dial' || (t === 'number' && !pr.step) || t === 'custom') drag(ctx, it, x, y, shift, false);
     return ctx.rebuild();
   }
   const h = playHit(ctx.root, x, y)?.key ?? null;
@@ -1644,12 +1696,18 @@ export function playLeave(ctx) {
   if (st.status?.until === Infinity) st.status.until = ctx.now + 1500;
   ctx.rebuild();
 }
-// Button repeat, called every few ms while pressed: a "repeat" button acts every 100 ms after a 400 ms delay. True when it acted.
+// Which stepper of a number x is on: -1 down, 1 up, 0 neither.
+function stepAt(ctx, it, x) {
+  const s = stepperOf(ctx.docs['skin.json'], it.w, it.rect), r = it.rect;
+  return !s ? 0 : x < r[0] + s.width ? -1 : x >= r[0] + r[2] - s.width ? 1 : 0;
+}
+// Repeats, called every few ms while pressed: a "repeat" button acts, and a held stepper steps, every
+// 100 ms after a 400 ms delay. True when it acted.
 export function playTick(ctx) {
   const pr = ctx.st.press, it = pr && findItem(ctx.root, pr.key);
-  if (!it || it.w.type !== 'button' || it.w.press !== 'repeat' || ctx.now < pr.next) return false;
+  if (!it || !(pr.step || (it.w.type === 'button' && it.w.press === 'repeat')) || ctx.now < pr.next) return false;
   pr.next = ctx.now + 100;
-  runAction(ctx, it);
+  if (pr.step) { stepNumber(ctx.st, it, pr.step); ctx.rebuild(); } else runAction(ctx, it);
   return true;
 }
 // The wheel (notches > 0 = away from the user) moves the dial or number under the pointer by its

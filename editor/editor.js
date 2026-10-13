@@ -429,7 +429,18 @@ function paintItem(g, it) {
       } else if (w.image) drawArt(g, w.image, L.valueTile(tiles(w.image), norm), r);
       break;
     }
-    case 'number': drawFill(g, w.fill, r, 0); drawText(g, w.text, r, w.pad, L.numberText(w, it.p, L.getPlain(st, it), pc, it)); break;
+    case 'number': {
+      drawFill(g, w.fill, r, 0);
+      const s = L.stepperOf(skin(), w, r);
+      if (s) for (const [k, name] of [[-1, s.down], [1, s.up]]) { // centred in its end, without the surface, lit while held
+        const e = name && getImage(ip(name));
+        if (!e) continue;
+        const t = L.tileRect(e.w, e.h, imeta(name).tiles, imeta(name).axis, 0), dx = Math.trunc((s.width - t[2]) / 2);
+        drawImage(g, name, st.press?.key === it.key && st.press.step === k ? 1 : 0, [k > 0 ? r[0] + r[2] - s.width + dx : r[0] + dx, r[1] + Math.trunc((r[3] - t[3]) / 2), t[2], t[3]]);
+      }
+      drawText(g, w.text, r, L.numberPad(skin(), w, r), L.numberText(w, it.p, L.getPlain(st, it), pc, it));
+      break;
+    }
     case 'plot': // no signal: a trace lies on the bottom row, bars draw nothing
       drawFill(g, w.fill, r, 0);
       if (!w.draw || w.draw === 'trace' || w.draw === 'bars_trace') fillCol(g, [r[0], r[1] + r[3] - 1, r[2], 1], L.cssColour(w.line) ? w.line : '#ffffffff');
@@ -1558,6 +1569,8 @@ function field(target, [path, kind, opt = {}]) {
     case 'font': return row(label, [textCtl(get, set, { list: 'dl-fonts' }), jump('Show in Images', () => get() && exists(fp(get())) && (switchTab('images'), openFont(get())))]);
     case 'view': return row(label, [textCtl(get, set, { list: 'dl-views' }), jump('Open this view', () => get() && openView(get()))]);
     case 'vars': return row(label, textCtl(get, set, { fmt: L.formatVars, parse: L.parseVars, placeholder: opt.placeholder || 'name=value, ...' }));
+    case 'inputs': return row(label, areaCtl(get, set, L.formatInputs, L.parseInputs, 4), 'One per line: name = a param id (may use {var}) or a number');
+    case 'plates': return row(label, areaCtl(get, set, L.formatPlates, L.parsePlates, 3), 'One per line: plate image = down image, up image (each two tiles, at rest and held)');
     case 'strlist': return row(label, textCtl(get, set, { fmt: v => (v || []).join(', '), parse: t => t.split(',').map(s => s.trim()).filter(Boolean), list: opt.list }), opt.title);
     case 'numlist': return row(label, textCtl(get, set, { fmt: v => (v || []).join(', '), parse: t => t.split(/[\s,]+/).filter(Boolean).map(Number).filter(Number.isFinite), placeholder: opt.placeholder }), opt.title);
     case 'menu': return row(label, menuCtl(target, path), opt.title);
@@ -1610,7 +1623,8 @@ const SPECS = {
     ['zeroText', 'rawstr', { placeholder: 'text at 0; "" for none', title: 'Shown instead of the value while it is exactly 0; type "" for an empty text' }],
     ['reset', 'reset', { def: 'default' }], ['wheel', 'num', { placeholder: 'off', title: 'Fraction of the range per wheel notch (0 or empty: off)' }],
     ['sensitivityZones', 'numlist', { label: 'zones', placeholder: 'e.g. 1, 0.1, 0.01', title: 'Value units per pixel for drags started in each of these equal columns, left to right' }],
-    ['drag', 'bool', { def: true, title: 'Off: the box does not drag' }]]]],
+    ['drag', 'bool', { def: true, title: 'Off: the box does not drag' }],
+    ['stepper', 'bool', { def: true, title: 'Off: no down and up buttons, even on a plate the skin\'s steppers name' }]]]],
   textbox: [FILL, TEXT('text', 'Text'), ['Layout', [PAD, ['multiline', 'bool'], STATUS]],
     ['Text data', [['key', 'str', { placeholder: 'data key, may use {var}' }], ['editable', 'bool'], ['editOn', 'enum', { options: ['click'], def: 'double' }]]], SOURCE],
   meter: [['Meter', [['image', 'image'], RANGE]]],
@@ -1625,7 +1639,9 @@ const SPECS = {
   custom: [['Custom', [['kind', 'str', { list: 'dl-kinds' }], ['params', 'strlist', { list: 'dl-params' }],
     ['first', 'int', { label: 'first note', when: w => w.kind === 'piano' }], ['count', 'int', { when: w => w.kind === 'piano' }],
     ['velocity', 'int', { placeholder: 'from the height', when: w => w.kind === 'piano' }], ['glide', 'bool', { def: true, when: w => w.kind === 'piano' }],
-    ['keyImages', 'vars', { label: 'key images', when: w => w.kind === 'piano', placeholder: 'c=keyboard/c, black=..., top=...' }]]], FILL],
+    ['keyImages', 'vars', { label: 'key images', when: w => w.kind === 'piano', placeholder: 'c=keyboard/c, black=..., top=...' }],
+    ['model', 'str', { when: w => w.kind === 'stage_env', placeholder: 'none: the stages as drawn', title: 'A model the product registered (registerStageModel): the curve is its envelope, in seconds' }],
+    ['inputs', 'inputs', { when: w => w.kind === 'stage_env' }]]], FILL],
 };
 const ACTIONS = ['goto', 'set', 'toggle', 'url', 'step', 'sequence', 'presets', 'data', 'midi_map', 'scale'];
 const actionKind = w => ACTIONS.find(k => w?.action && typeof w.action === 'object' && k in w.action) || '';
@@ -2044,7 +2060,7 @@ function menuEditor(W, key, at) {
   tree.focus();
 }
 
-// showIf / enableIf: kind, param or var name (with pickers) and the value to compare with.
+// showIf / enableIf / onIf: kind, param or var name (with pickers) and the value to compare with.
 const COND_KINDS = [['', '(always)'], ['param:on', 'param on'], ['param:eq', 'param ='], ['param:ne', 'param ≠'], ['param:ge', 'param ≥'], ['param:le', 'param ≤'],
   ['var:eq', 'var ='], ['var:ne', 'var ≠'], ['stack:is', 'stack shows'], ['json:all', 'all / any (JSON)']];
 function condCtl(W, key) {
@@ -2070,8 +2086,8 @@ function condCtl(W, key) {
     name.hidden = !kind.value || on === 'json'; value.hidden = !kind.value || m === 'on';
     value.className = on === 'json' ? 'json' : 'v';
     value.placeholder = on === 'json' ? '{ "any": [ ... ] }' : 'value';
-    const now = it && (key === 'showIf' ? it.show : it.enabled || W()?.disabled);
-    hint.textContent = it && W()?.[key] != null && !now ? (key === 'showIf' ? 'false now: hidden' : 'false now: disabled') : '';
+    const now = it && (key === 'showIf' ? it.show : key === 'onIf' ? it.lit : it.enabled || W()?.disabled);
+    hint.textContent = it && W()?.[key] != null && !now ? `false now: ${key === 'showIf' ? 'hidden' : key === 'onIf' ? 'unlit' : 'disabled'}` : '';
   });
   return [h('div', { className: 'f cond' }, h('label', {}, key), h('div', { className: 'ctl' }, kind, name, value)), hint];
 }
@@ -2155,6 +2171,7 @@ function widgetInspector() {
   out.push(field(W, ['mirror', 'strlist', { list: 'dl-params', title: 'Params that get the same normalized value with every edit (may use {var})' }]));
   out.push(field(W, ['value', 'num']), field(W, ['tip', 'str']));
   out.push(h('h4', {}, 'Conditions'), ...condCtl(W, 'showIf'), ...condCtl(W, 'enableIf'));
+  if (w.type === 'button' || w.type === 'dropdown') out.push(...condCtl(W, 'onIf'));
   out.push(h('h4', {}, 'Menus'), row('menuStyle', enumCtl(() => W()?.menuStyle, v => { const t = W(); if (t) L.setPath(t, 'menuStyle', v); }, ['native', ...styleNames()]), 'The menu style of its dropdown or context menu'),
     field(W, ['context', 'menu', { title: 'The menu a right-click opens' }]));
   for (const sec of SPECS[w.type] || [FILL]) {
@@ -2205,6 +2222,8 @@ function viewInspector() {
   out.push(btns(['New view', newView], ['Rename', renameView], ['Delete', deleteView, '', 'danger']));
   out.push(h('h4', {}, 'Skin'));
   out.push(field(skin, ['name', 'str']), field(skin, ['root', 'view', { label: 'root view' }]), field(skin, ['vars', 'vars']));
+  out.push(h('h4', {}, 'Steppers'), note('A number drawn on one of these plates, and taking input, gets a down button at its left end and an up button at its right, each this wide; its text keeps clear of them.'),
+    field(skin, ['steppers.width', 'int', { label: 'width', def: 9 }]), field(skin, ['steppers.plates', 'plates', { label: 'plates' }]));
   out.push(h('h4', {}, 'Menu style'), note('With a menu style the runtime draws dropdown menus itself, in this style; without one it uses native menus.'));
   for (const spec of MENU_SPEC) out.push(...[].concat(field(skin, ['menu.' + spec[0], ...spec.slice(1)])));
   for (const n of styleNames()) {
