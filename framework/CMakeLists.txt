@@ -37,7 +37,15 @@ if(CMAKE_SIZEOF_VOID_P EQUAL 8 AND HOLLOW_FORMATS MATCHES "CLAP")
   FetchContent_Declare(clap GIT_REPOSITORY https://github.com/free-audio/clap GIT_TAG 1.2.10 GIT_SHALLOW TRUE)
   # Ahead of v0.16.0: the standalone's audio and MIDI settings only persist from PR #517, which is
   # merged onto next but not released. Move back to a tag (v0.17.0?) once one carries it. The sha is
-  # spelled in full because GitHub only serves a shallow fetch of a complete one.
-  FetchContent_Declare(clap-wrapper GIT_REPOSITORY https://github.com/free-audio/clap-wrapper GIT_TAG fb9d6e4770c18d44b5756296810ac3cf121e000c GIT_SHALLOW TRUE)
+  # spelled in full because GitHub serves a fetch of nothing shorter.
+  #
+  # Not shallow, unlike clap above, which is pinned to a tag. GIT_SHALLOW clones at depth 1, which holds
+  # each branch's tip and nothing behind it, so a sha only checks out while it is still the tip of next:
+  # one commit upstream and the clone no longer contains it ("unable to read tree"), which is a build that
+  # breaks on its own with nothing changed here. A full clone can check out any commit that is still
+  # reachable, so the pin keeps meaning what it says.
+  FetchContent_Declare(clap-wrapper GIT_REPOSITORY https://github.com/free-audio/clap-wrapper GIT_TAG 527a37461dd0480562d110e857cf9538fecd8b98)
   FetchContent_MakeAvailable(clap clap-wrapper)
+  include(cmake/HollowClapWrapperFix.cmake)
+  hollow_fix_clap_wrapper("${clap-wrapper_SOURCE_DIR}")
 endif()

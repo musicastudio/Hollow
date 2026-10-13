@@ -25,6 +25,7 @@ struct PlatformWindow {
     bool tracking = false;
     wchar_t high = 0;           // WM_CHAR: the first half of a surrogate pair
     bool ateKey = false;        // the last key down was ours, so its WM_CHAR / WM_SYSCHAR is ours too
+    bool sentDown[256] = {};    // keys whose press went on to the host, by virtual key: their release goes too
     HWND root = nullptr;        // the standalone's window, while its close asks the GUI first
     WNDPROC rootProc = nullptr; // and its own procedure
     bool closing = false;       // platformCloseApp: it closes without asking
@@ -114,9 +115,10 @@ static bool modifierKey(WPARAM wp) {
 // the same problem the same way (juce_WindowsHooks_windows.cpp), and on Windows only: macOS routes keys
 // through the responder chain and X11 through input focus, neither of which a host sits in front of.
 //
-// What is deliberately NOT taken: anything while text entry, a menu, a list or a modal has the keyboard,
-// since those need the message to go on and become a WM_CHAR, and any key no binding matches. So the hook
-// removes only keystrokes the editor has actually acted on.
+// What is deliberately NOT taken: any key the editor did not use, and the one key it uses without using
+// the message, which is the key text entry is typing with — that one has to go on and become a WM_CHAR,
+// which is the whole of the keystroke there. So the hook removes only keystrokes the editor has acted on,
+// and leaves only the half-used one, whose press the window's own procedure then offers again to no effect.
 struct KeyHook {
     HHOOK hook = nullptr;
     int refs = 0;
@@ -146,7 +148,13 @@ static LRESULT CALLBACK keyHookProc(int code, WPARAM wp, LPARAM lp) {
         !modifierKey(msg.wParam)) {
         if (PlatformWindow* w = windowForMessage(msg.hwnd)) {
             Gui& g = *w->gui;
-            if (!g.wantsKeys() && !g.skin().keys.empty() && offerKey(g, msg.wParam)) {
+            // Whatever the editor uses the key for is taken from the host, text entry's own keys included:
+            // a host that closes the plug-in's window on Escape must not see the Escape that just cancelled
+            // an edit, and the same goes for the Enter that committed one. What is left to go on is the key
+            // whose character text entry is waiting for (charPending), since blanking it would stop the
+            // WM_CHAR that is the whole of the keystroke; its press does nothing twice, so the window's own
+            // procedure offering it again is harmless.
+            if (!g.skin().keys.empty() && offerKey(g, msg.wParam) && !g.charPending()) {
                 keyLog("hook took msg=%04x wp=%02x hwnd=%p", (unsigned)msg.message, (unsigned)msg.wParam, (void*)msg.hwnd);
                 msg = {};                 // the host's loop sees nothing, so no accelerator and no WM_CHAR
                 msg.message = WM_USER;
@@ -257,18 +265,36 @@ static LRESULT CALLBACK windowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     // Alt on its own would take the window into menu mode, whose feedback for a chord it finds no mnemonic
     // for is a beep and a flash of the title bar. A skin with shortcuts has already used the chord, so the
     // modifier's press and release stop here rather than reaching DefWindowProc or the host.
+    //
+    // Every other release goes where its press went. The editor is done with a key on the press, but a host
+    // feature that pairs the two reads a press with no release as a key still held: its virtual keyboard
+    // sounds a note for as long as a key is down, so that note never ends and the next key sounds over one
+    // the host still believes in. Only for keys whose press was forwarded, so a chord the editor used stays
+    // entirely the editor's.
+    case WM_KEYUP:
     case WM_SYSKEYUP:
         if (!g.skin().keys.empty() && (wp == VK_MENU || wp == VK_F10)) return 0;
+        if (wp < 256 && w->sentDown[wp]) {
+            w->sentDown[wp] = false;
+            if (forwardKey(w, msg, wp, lp)) return 0;
+        }
         break;
     case WM_KEYDOWN:
     case WM_SYSKEYDOWN: {   // Alt chords arrive as WM_SYSKEYDOWN, never WM_KEYDOWN
         if (!g.skin().keys.empty() && modifierKey(wp))
             return 0;   // a modifier alone is no keystroke for anyone, and Alt reaching DefWindowProc is the flash
         // Whether this key was ours decides what happens to the WM_CHAR or WM_SYSCHAR that follows it.
-        w->ateKey = offerKey(g, wp);
-        keyLog("key msg=%04x wp=%02x used=%d focus=%p", (unsigned)msg, (unsigned)wp, (int)w->ateKey, (void*)GetFocus());
-        if (w->ateKey) return 0;
-        if (forwardKey(w, msg, wp, lp)) return 0;
+        // A key text entry is typing with is ours too, but its character is the whole of what the entry
+        // wants, so that one is left to arrive (charPending) rather than taken along with its key.
+        const bool used = offerKey(g, wp);
+        w->ateKey = used && !g.charPending();
+        keyLog("key msg=%04x wp=%02x used=%d pending=%d focus=%p", (unsigned)msg, (unsigned)wp, (int)used, (int)g.charPending(),
+               (void*)GetFocus());
+        if (used) return 0;
+        if (forwardKey(w, msg, wp, lp)) {
+            if (wp < 256) w->sentDown[wp] = true;   // so its release follows it there
+            return 0;
+        }
         break;   // not ours and nowhere to send it: DefWindowProc, so Alt+F4 and the system menu still work
     }
     case WM_CHAR:
@@ -295,6 +321,9 @@ static LRESULT CALLBACK windowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         break;
     case WM_KILLFOCUS:
         keyLog("WM_KILLFOCUS to=%p", (void*)wp);
+        // A key held as the keyboard moves on releases into whatever has it now, so nothing here is owed a
+        // release any more and a later one is not ours to forward.
+        std::fill(std::begin(w->sentDown), std::end(w->sentDown), false);
         g.focusLost();
         break;
     }
@@ -469,6 +498,12 @@ void platformOpenUrl(const std::string& url) {
 const bool kAudioSettings = true;
 void platformAudioSettings(PlatformWindow* w) {
     PostMessageW(GetAncestor(w->hwnd, GA_ROOT), WM_SYSCOMMAND, 0, 0);
+}
+
+// A system command HollowClapWrapperFix.cmake adds to clap-wrapper, which opens the ASIO driver's panel
+// through RtAudio's ASIO SDK; it does nothing while the driver is not ASIO.
+void platformDriverPanel(PlatformWindow* w) {
+    PostMessageW(GetAncestor(w->hwnd, GA_ROOT), WM_SYSCOMMAND, 0x100, 0);
 }
 
 void platformWatchClose(PlatformWindow* w) {

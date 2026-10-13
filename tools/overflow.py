@@ -89,12 +89,17 @@ def check(skin):
     fs = fonts(skin)
     params = {p["id"]: p for p in json.load(open(os.path.join(skin, "params.json"), encoding="utf-8"))}
     tables = {os.path.basename(f)[:-5]: json.load(open(f, encoding="utf-8")) for f in glob.glob(os.path.join(skin, "data", "*.json"))}
+    steppers = json.load(open(os.path.join(skin, "skin.json"), encoding="utf-8")).get("steppers") or {}
     found = []
     for path in sorted(glob.glob(os.path.join(skin, "views", "*.json"))):
         view = os.path.basename(path)[:-5]
         for w in json.load(open(path, encoding="utf-8"))["widgets"]:
             x, y, rw, rh = w["rect"]
-            pad = w.get("pad") or [0, 0, 0, 0]
+            pad = list(w.get("pad") or [0, 0, 0, 0])
+            sw = steppers.get("width", 9)   # a number on a stepper plate keeps its text clear of the two buttons
+            if (w.get("type") == "number" and w.get("stepper", True) and (w.get("fill") or {}).get("image") in (steppers.get("plates") or {})
+                    and (w.get("drag", True) is not False or w.get("editable")) and 2 * sw < rw):
+                pad[0], pad[2] = max(pad[0], sw), max(pad[2], sw)
             if w.get("type") == "list":
                 row = fs.get((w.get("row") or {}).get("font"))
                 cols = w.get("columns") or []

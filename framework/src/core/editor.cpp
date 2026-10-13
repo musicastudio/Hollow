@@ -596,6 +596,24 @@ void Gui::setNorm(const Hit& h, double t, int which) {
     setPlain(h, p >= 0 ? state_.fromNormal(p, t) : w.kind == Kind::Custom ? t : w.rangeMin + t * (w.rangeMax - w.rangeMin), which);
 }
 
+// A number's steppers: the skin's "steppers" for the plate it is drawn on, unless it opts out or takes no input.
+const Skin::Stepper* Gui::stepperOf(const Node& n, int i) const {
+    const Widget& w = n.view->widgets[i];
+    if (w.kind != Kind::Number || !w.stepper || w.fill.image < 0 || (!w.dragOn && !w.editable)) return nullptr;
+    auto it = skin_->steppers.find(w.fill.image);
+    return it == skin_->steppers.end() || 2 * it->second.width >= n.w[i].r.w ? nullptr : &it->second;
+}
+
+void Gui::stepNumber(const Hit& h, int dir) {
+    const Widget& w = wid(h);
+    int p = inst(h).param;
+    double lo = p >= 0 ? state_.def(p).min : std::min(w.rangeMin, w.rangeMax), hi = p >= 0 ? state_.def(p).max : std::max(w.rangeMin, w.rangeMax);
+    int steps = p >= 0 ? state_.def(p).steps : w.steps;
+    double unit = (hi - lo) / (steps > 0 ? steps : 100);
+    if (w.hasRange && p >= 0) lo = std::max(lo, std::min(w.rangeMin, w.rangeMax)), hi = std::min(hi, std::max(w.rangeMin, w.rangeMax));
+    setPlain(h, std::clamp(plain(*h.node, h.i) + dir * unit, lo, hi));
+}
+
 void Gui::setParam(int p, double v) {
     if (p < 0) return;
     bool host = host_ && state_.def(p).host;
@@ -621,6 +639,26 @@ void Gui::setParams(const std::vector<std::pair<int, double>>& values) {
         if (host_ && state_.def(pv.first).host && state_.get(pv.first) != old) host_->edit(pv.first, state_.get(pv.first));
     }
     for (int q : gesture) host_->endEdit(q);
+    update();
+}
+
+void Gui::beginParams(const std::vector<int>& ps) {
+    for (int p : ps)
+        if (p >= 0 && host_ && state_.def(p).host && std::find(editing_.begin(), editing_.end(), p) == editing_.end()) {
+            host_->beginEdit(p);
+            editing_.push_back(p);
+        }
+}
+
+// Outside a gesture this is the same as setParam.
+void Gui::editParam(int p, double v) {
+    if (std::find(editing_.begin(), editing_.end(), p) == editing_.end()) {
+        setParam(p, v);
+        return;
+    }
+    double old = state_.get(p);
+    state_.set(p, v);
+    if (state_.get(p) != old) host_->edit(p, state_.get(p));
     update();
 }
 
@@ -805,9 +843,11 @@ int Gui::buttonTile(const Node& n, int i) const {
     bool pressed = w.pressedTiles && live(press_) && press_ == me;
     bool hovered = w.hoverTiles && live(hover_) && hover_ == me;
     int group = pressed ? 1 : hovered ? 1 + w.pressedTiles : 0;
-    int value = w.source == Widget::MidiIn || w.source == Widget::Modified ? sourceValue(w) == "1"
+    int value = w.onIf.op != Cond::None ? test(n, w.onIf, w.onIf.param.empty() ? -1 : state_.indexOf(subst(n, w.onIf.param)))
+              : w.source == Widget::MidiIn || w.source == Widget::Modified ? sourceValue(w) == "1"
               : w.action.type == Action::Goto || w.action.type == Action::Set ? active(n, i)
               : w.action.type == Action::Value ? n.w[i].param >= 0 && state_.get(n.w[i].param) == w.action.amount
+              : w.action.type == Action::Scale && w.action.amount > 0 ? std::fabs(w.action.amount - (base_->scales.empty() ? scale_ : zoom_)) < 1e-9
               : w.action.type == Action::Step ? 0 : index(n, i);
     return std::clamp(value, 0, states - 1) + states * group;
 }
@@ -930,11 +970,26 @@ void Gui::paintWidget(Canvas& c, Node& n, int i, Rect r) {
             drawImage(c, img, tile, r, false, surf());
         }
         break;
-    case Kind::Number:
+    case Kind::Number: {
         drawFill(c, w.fill, r, 0);
+        int pad[4] = {w.pad[0], w.pad[1], w.pad[2], w.pad[3]};
+        if (const Skin::Stepper* st = stepperOf(n, i)) {   // down at the left end, up at the right, lit while held
+            bool held = live(press_) && press_ == Hit{&n, i} && stepDir_ != 0;
+            for (int k = 0; k < 2; ++k) {
+                int img = k ? st->up : st->down;
+                if (img < 0) continue;
+                const Image& im = skin_->images[img];
+                Rect t = im.tile(0);
+                int x = k ? r.x + r.w - st->width + (st->width - t.w) / 2 : r.x + (st->width - t.w) / 2;
+                drawImage(c, im, held && stepDir_ == (k ? 1 : -1) ? 1 : 0, {x, r.y + (r.h - t.h) / 2, t.w, t.h});
+            }
+            pad[0] = std::max(pad[0], st->width);
+            pad[2] = std::max(pad[2], st->width);
+        }
         if (editing(n, i)) paintEdit(c);
-        else drawCaption(c, w.text, numberText(n, i), r, w.pad, 0, 0, false);
+        else drawCaption(c, w.text, numberText(n, i), r, pad, 0, 0, false);
         break;
+    }
     case Kind::Textbox:
         drawFill(c, w.fill, r, 0);
         if (editing(n, i)) paintEdit(c);
@@ -956,6 +1011,15 @@ void Gui::paintWidget(Canvas& c, Node& n, int i, Rect r) {
             }
         }
         auto height = [&](float v) { return (int)std::lround(std::clamp(v, 0.0f, 1.0f) * (r.h - 1)); };
+        if (n > 1 && w.drawMode == 0) {   // a trace through the values, smooth, "width" design units wide, over its "glow"
+            std::vector<std::pair<double, double>> pts;
+            double lw = std::max(1.0, w.json["width"].num(1) * skin_->density), inner = r.h - lw;
+            for (int k = 0; k < n; ++k)
+                pts.push_back({r.x + 0.5 + (r.w - 1) * double(k) / (n - 1), r.y + lw / 2 + inner * (1 - std::clamp((double)vals[k], 0.0, 1.0))});
+            if (uint32_t glow = parseColour(w.json["glow"].str(), 0); glow >> 24) drawPolyline(c, pts, glow, 4 * lw);
+            drawPolyline(c, pts, w.line, lw);
+            break;
+        }
         if (n > 0 && w.drawMode == 0) {   // a trace: each column reads the value under it
             for (int x = 0; x < r.w; ++x) col[(size_t)x] = height(vals[(size_t)x * n / r.w]);
         } else if (n > 0) {               // bars: one per value, centred on its share of the width
@@ -1208,7 +1272,7 @@ Hit Gui::hit(Node& n, int x, int y) {
         bool input = w.kind == Kind::Button || w.kind == Kind::Dropdown || w.kind == Kind::Dial || w.kind == Kind::Number ||
                      w.kind == Kind::Veil || w.kind == Kind::List || !w.context.empty() ||
                      (w.kind == Kind::Textbox && w.editable && !w.key.empty()) ||
-                     (w.kind == Kind::Custom && w.ops && (w.ops->down || w.ops->dbl || w.ops->right));
+                     (w.kind == Kind::Custom && w.ops && (w.ops->down || w.ops->dbl || w.ops->right || w.ops->wheel));
         if (input) return {&n, i, gen_};
     }
     return {};
@@ -1266,7 +1330,8 @@ void Gui::runAction(Node& n, int i, const Action& action) {
             closing_ = true;
             platformCloseApp(window);
         } else if (!skin_->settingsView.empty() && readDevices()) {
-            setModal(skin_->settingsView);
+            if (!settingsShown(root_)) setModal(skin_->settingsView);
+            else { platformDriverPanel(window); invalidateAll(); }   // already in sight: the driver's own panel, and read again
         } else {
             platformAudioSettings(window);
         }
@@ -1275,8 +1340,9 @@ void Gui::runAction(Node& n, int i, const Action& action) {
         for (auto& kv : a.vars) state_.setData(subst(n, kv.first), kv.second);
         setModal(a.target);
         return;
-    case Action::Scale:   // the window scale menu, under the widget
-        scaleMenu(rectOf(n, i));
+    case Action::Scale:   // a window scale, or the scale menu under the widget
+        if (a.amount > 0) setScale(a.amount);
+        else scaleMenu(rectOf(n, i));
         return;
     case Action::File: {   // a native dialog; the chosen path goes to text data, for the product to act on
         std::string path;
@@ -1434,6 +1500,7 @@ void Gui::releasePress() {
     if (!live(press_)) return;
     Hit h = press_;
     press_ = {};
+    stepDir_ = 0;
     const Widget& w = wid(h);
     if (w.kind == Kind::Custom && w.ops->up) w.ops->up(*this, h, rectOf(*h.node, h.i), INT_MIN / 2, INT_MIN / 2);
     if (w.kind == Kind::Dial && w.spring >= 0) setNorm(h, w.spring);
@@ -1579,6 +1646,14 @@ void Gui::mouseDown(int x, int y, bool right, bool dbl, bool shift) {
         }
         break;
     case Kind::Number:
+        if (const Skin::Stepper* st = stepperOf(*h.node, h.i); st && (x < r.x + st->width || x >= r.x + r.w - st->width)) {
+            stepDir_ = x < r.x + st->width ? -1 : 1;   // a press on a stepper: one step now, more while held
+            press_ = h;
+            begin(h);
+            stepNumber(h, stepDir_);
+            nextRepeat_ = Clock::now() + ms(400);
+            break;
+        }
         if (dbl && w.editable) {
             startEdit(h, false, x, y);
             break;
@@ -1620,7 +1695,7 @@ void Gui::mouseMove(int x, int y, bool shift) {
     }
     if (live(press_)) {
         const Widget& w = wid(press_);
-        if (w.kind == Kind::Dial || w.kind == Kind::Number) {
+        if (w.kind == Kind::Dial || (w.kind == Kind::Number && !stepDir_)) {
             drag(press_, x, y, shift, false);
         } else if (w.kind == Kind::Custom && w.ops->drag) {
             w.ops->drag(*this, press_, rectOf(*press_.node, press_.i), x, y, shift);
@@ -1689,6 +1764,7 @@ void Gui::mouseUp(int x, int y, bool shift) {
     }
     Hit h = press_;
     press_ = {};
+    stepDir_ = 0;
     const Widget& w = wid(h);
     Rect r = rectOf(*h.node, h.i);
     invalidate(r);
@@ -1774,6 +1850,10 @@ void Gui::wheel(int x, int y, double notches, bool shift) {
     if (live(press_) || !menus_.empty()) return;
     hideTip(true);
     Hit h = hit(x, y);
+    if (h && wid(h).kind == Kind::Custom && wid(h).ops && wid(h).ops->wheel) {
+        wid(h).ops->wheel(*this, h, rectOf(*h.node, h.i), x, y, notches, shift);
+        return;
+    }
     if (h && (wid(h).kind == Kind::Dial || wid(h).kind == Kind::Number) && wid(h).wheel > 0) {
         const Widget& w = wid(h);
         int steps = stepsOf(*h.node, h.i);
@@ -1820,6 +1900,8 @@ void keyLog(const char* fmt, ...) {
 }
 
 bool Gui::wantsKeys() const { return !menus_.empty() || editing_on_ || live(listFocus_) || !modalShown_.empty(); }
+
+bool Gui::charPending() const { return charPending_; }
 
 // Text entry, a menu or a list is done with the keyboard. A skin with shortcuts keeps it anyway, since its
 // chords have to work without a click first; one without hands it back, as the editor always did.
@@ -1915,6 +1997,7 @@ std::string Gui::tipText(const Hit& h) const {
 }
 
 bool Gui::keyDown(Key k, bool shift, bool ctrl, bool alt, unsigned ch, bool fromHost) {
+    charPending_ = false;   // set again below for a key whose character the text entry is still waiting for
     if (!menus_.empty()) {   // arrows move over the top menu's items (skipping separators, wrapping), Enter picks
         Menu& m = menus_.back();
         size_t level = menus_.size() - 1;
@@ -2025,6 +2108,12 @@ bool Gui::keyDown(Key k, bool shift, bool ctrl, bool alt, unsigned ch, bool from
         move = false;
         break;
     case KeyNone:
+        // A printable key: nothing to do with the key itself, since the character it types is the whole of
+        // it and comes next. The press is still the entry's, so the host never sees it, but the character
+        // that follows must reach keyChar rather than being taken along with the key. An Alt or Ctrl chord
+        // types nothing and so has no character to wait for; AltGr, which arrives as both of them held,
+        // types one and does.
+        charPending_ = (ctrl && alt) || (!ctrl && !alt);
         return true;
     }
     if (move && !shift) e.anchor = e.caret;
@@ -2675,6 +2764,10 @@ void Gui::tick() {
             runAction(*press_.node, press_.i, wid(press_).action);
         }
     }
+    if (live(press_) && stepDir_ && now >= nextRepeat_) {   // a held stepper repeats as a repeat button does
+        nextRepeat_ = now + ms(100);
+        stepNumber(press_, stepDir_);
+    }
     if (state_.ui() != savedUi_) {   // the host loaded a state
         loaded = true;
         applyUi(state_.ui());
@@ -2929,10 +3022,26 @@ bool Gui::readDevices() {
     return true;
 }
 
-// While the settings modal shows: a choice made there goes to the app's settings window, and everything
-// is read back, since a new API or device changes what the others offer.
+// Whether the settings view is in sight: as the modal, or in any embed that shows.
+bool Gui::settingsShown(const Node& n) const {
+    for (size_t i = 0; n.view && i < n.w.size(); ++i) {
+        const Inst& s = n.w[i];
+        if (!s.child || s.hidden || !s.shown) continue;
+        if (s.child->viewName == skin_->settingsView || settingsShown(*s.child)) return true;
+    }
+    return false;
+}
+
+// While the settings view shows: it is read when it comes into sight, a choice made there goes to the
+// app's settings window, and everything is read back, since a new API or device changes what the others offer.
 void Gui::syncDevices() {
-    if (modalShown_.empty() || modalShown_ != skin_->settingsView || !window) return;
+    const bool shown = window && !skin_->settingsView.empty() && settingsShown(root_);
+    if (shown != devicesShown_) {
+        devicesShown_ = shown;
+        if (shown) readDevices();
+        return;
+    }
+    if (!shown) return;
     for (int k = 0; k < 6; ++k) {
         int p = state_.indexOf(std::string("standalone.") + kDevices[k]);
         if (p < 0 || state_.get((size_t)p) == deviceSent_[k]) continue;
@@ -2960,6 +3069,7 @@ void Gui::setSkin(const Skin* skin) {
 
 struct Editor::Impl {
     Gui gui;
+    void* parent = nullptr;   // the host window the view lives in
     Impl(std::shared_ptr<Skin> skin, State& state, Host& host) : gui(skin.get(), state, &host) {
         gui.watch(std::move(skin));
         gui.applyUi(state.ui());
@@ -2971,8 +3081,14 @@ Editor::Editor(std::shared_ptr<Skin> skin, State& state, Host& host)
 
 Editor::~Editor() { detach(); }
 
+// A host may move an open editor into another window of its own: Cubase's "Always on top" swaps the
+// plug-in window, and clap-wrapper's VST3 view hands the new one to set_parent without destroying the
+// GUI first (WrappedView::removed only forgets the old one). The view leaves the old window and opens
+// in the new one, or the new window stays empty.
 bool Editor::attach(void* parent) {
     Gui& g = impl_->gui;
+    if (g.window && parent != impl_->parent) detach();
+    impl_->parent = parent;
     if (!g.window) {
         g.state().setData(kModalKey, "");   // a new window never opens on a modal an old one left
         g.window = platformOpen(parent, &g);

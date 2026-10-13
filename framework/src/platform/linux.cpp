@@ -337,6 +337,7 @@ void platformOpenUrl(const std::string& url) {
 // clap-wrapper's Linux standalone has no settings window.
 const bool kAudioSettings = false;
 void platformAudioSettings(PlatformWindow*) {}
+void platformDriverPanel(PlatformWindow*) {}
 bool platformDevices(PlatformWindow*, std::vector<DeviceList>&) { return false; }
 void platformSetDevice(PlatformWindow*, int, int) {}
 void platformWatchClose(PlatformWindow*) {}

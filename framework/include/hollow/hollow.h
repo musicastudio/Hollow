@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <string>
 #include <utility>
@@ -147,6 +148,22 @@ public:
     // host re-reads every value; it records none of them as automation.
     std::function<void()> paramsChanged;
 };
+
+// ---- envelope models (optional) ---------------------------------------------------------------
+
+// A stage_env widget with "model": "<name>" draws the curve that model returns, on a time axis in seconds.
+// `in` holds the widget's "inputs" by name: a param's value or a number.
+// During a drag the values are fractional, between a param's steps.
+// Called on the GUI thread, many times per mouse move, so keep it fast.
+struct StageCurve {
+    std::vector<float> t, v;         // vertices: seconds and level. [0, keyOff) from key on, the rest from key off
+    int keyOff = 0;
+    std::vector<int> corner;         // per point: the vertex where it is reached, -1 if never
+    double lo = 0, hi = 1;           // level range
+    bool db = false;                 // levels are in dB
+};
+using StageModel = std::function<StageCurve(const std::map<std::string, double>& in)>;
+void registerStageModel(const std::string& name, StageModel model);
 
 // ---- implemented once per product (plugins/<name>/plugin.cpp) ---------------------------------
 

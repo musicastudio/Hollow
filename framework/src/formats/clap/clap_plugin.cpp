@@ -380,6 +380,7 @@ const clap_plugin_t* create(const clap_host_t* host) {
         s->skin = loadSkin();
         s->state = std::make_unique<State>(s->skin ? skinParams(*s->skin) : std::vector<ParamDef>{});
         if (s->skin) applyLearnDefaults(*s->state, *s->skin);
+        if (s->standalone()) s->state->setData("live.standalone", "1");   // so the processor knows, before it starts
         s->proc = createProcessor(*s->state);
         if (!s->proc) s->proc = std::make_unique<Processor>();
         if (pluginInfo().midiOut) s->proc->sendMidi = [s](int frame, const uint8_t* b, int n) { s->sendMidi(frame, b, n); };

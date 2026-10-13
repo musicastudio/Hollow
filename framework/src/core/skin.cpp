@@ -565,7 +565,8 @@ struct Loader {
             } else {
                 err += "cannot load font " + name + "\n";
             }
-        } else if (decode("fonts/" + name + ".png", f.img) && f.img.w > 0) {
+        } else if (((scale != 1 && decode("scales/" + formatNumber("%g", scale) + "/fonts/" + name + ".png", f.img)) ||   // a strip drawn for this scale
+                    decode("fonts/" + name + ".png", f.img)) && f.img.w > 0) {
             std::vector<int> marks;
             for (int x = 0; x < f.img.w; ++x)
                 if (f.img.px[x] >> 24) marks.push_back(x);
@@ -712,7 +713,7 @@ struct Loader {
         else if (a.has("toggle")) { r.type = Action::Toggle; r.target = a["toggle"].str(); }
         else if (a.has("url")) { r.type = Action::Url; r.target = a["url"].str(); }
         else if (a.has("standalone")) { r.type = Action::Standalone; r.target = a["standalone"].str(); }
-        else if (a.has("scale")) r.type = Action::Scale;
+        else if (a.has("scale")) { r.type = Action::Scale; r.amount = a["scale"].num(0); }   // "menu", or a scale to set
         else if (a.has("file")) {
             r.type = Action::File;
             r.target = a["file"].str();
@@ -780,6 +781,8 @@ struct Loader {
         w.disabled = j["disabled"].flag();
         w.showIf = cond(j["showIf"]);
         w.enableIf = cond(j["enableIf"]);
+        w.onIf = cond(j["onIf"]);
+        w.stepper = j["stepper"].flag(true);
         w.key = j["key"].str();
         w.editable = j["editable"].flag();
         w.status = j["status"].flag();
@@ -1038,6 +1041,14 @@ std::shared_ptr<Skin> loadFiles(std::shared_ptr<const Files> all, std::string* e
     skin->closeModal = sj["close"]["modal"].str();
     skin->closeIf = Loader::cond(sj["close"]["if"]);
     skin->settingsView = sj["standalone"]["settings"].str();
+    // "steppers": { "width": 9, "plates": { "<plate image>": ["<down image>", "<up image>"], ... } }
+    if (const Json& st = sj["steppers"]; st.type == Json::Object) {
+        int width = std::max(1, ld.px(st["width"].num(9)));
+        for (auto& m : st["plates"].members) {
+            int plate = ld.image(m.first);
+            if (plate >= 0) skin->steppers[plate] = {ld.image(m.second[0].str()), ld.image(m.second[1].str()), width};
+        }
+    }
     for (auto& kj : sj["keys"].items) {   // "keys": [ { "chord": "alt+f", "goto": ..., "stack": ... }, ... ]
         Binding b;
         if (!Loader::chord(kj["chord"].str(), b)) continue;   // an unreadable chord is dropped, not fatal

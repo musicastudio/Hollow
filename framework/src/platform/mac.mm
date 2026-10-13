@@ -315,6 +315,7 @@ const bool kAudioSettings = true;
 void platformAudioSettings(PlatformWindow*) {
     [NSApp sendAction:NSSelectorFromString(@"openAudioSettingsWindow:") to:nil from:nil];
 }
+void platformDriverPanel(PlatformWindow*) {}
 // Shortcut: the settings stay in the app's own window, and closing does not ask; Windows has both.
 bool platformDevices(PlatformWindow*, std::vector<DeviceList>&) { return false; }
 void platformSetDevice(PlatformWindow*, int, int) {}

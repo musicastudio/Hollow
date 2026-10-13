@@ -114,7 +114,7 @@ struct Action {
     std::vector<std::string> values;   // Cycle: the var's values in order, wrapping past the last
     Vars vars;                   // Goto and Set; Data and Modal: text key (may hold {vars}) to text
     Vars set;                    // Goto and Value: skin-wide vars it sets before it shows the view
-    double amount = 0;           // Step; Value: the value it sets
+    double amount = 0;           // Step; Value: the value it sets; Scale: the scale it sets (0: the menu)
     std::string key, nameKey;    // Presets: the envelope data key, the text key of the name field
     bool save = false;           // Presets: store into the chosen slot instead of loading it
     int perColumn = 0;           // Presets: items per menu column
@@ -172,8 +172,8 @@ struct Hit;
 // pixels. down returns true to capture the pointer, so drag and up follow; dbl, when set, takes
 // the second press of a double-click instead of down. hover gets a point outside r when the
 // pointer leaves. right gets right presses and releases over the widget. tick runs about 30
-// times a second while the widget is shown (redraws when what it shows changed). Hooks left null
-// do nothing.
+// times a second while the widget is shown (redraws when what it shows changed). wheel takes the
+// mouse wheel over the widget (notches up positive). Hooks left null do nothing.
 struct KindOps {
     void (*draw)(Gui&, Canvas&, const Hit&, Rect r);
     bool (*down)(Gui&, const Hit&, Rect r, int x, int y, bool shift);
@@ -183,6 +183,7 @@ struct KindOps {
     void (*hover)(Gui&, const Hit&, Rect r, int x, int y);
     void (*right)(Gui&, const Hit&, Rect r, int x, int y, bool shift, bool up);
     void (*tick)(Gui&, const Hit&, Rect r);
+    void (*wheel)(Gui&, const Hit&, Rect r, int x, int y, double notches, bool shift);
 };
 const KindOps* findKind(const std::string& kind);   // null: an unknown kind, drawn as its fill
 struct KindState {                                   // what one custom widget keeps between events
@@ -193,6 +194,8 @@ void presetMenu(Gui& g, const Hit& h, const Action& a); // the "presets" action 
 // Scope buffers (plot and the scope kinds): one height per column from the bottom, -1 = a gap.
 // mode 0 trace, 1 bars, 2 bars then trace, 3 bars from the centre then trace.
 void drawScope(Canvas& c, Rect r, const std::vector<int>& v, int mode, uint32_t c1, uint32_t c2, int thick = 1);
+// An antialiased polyline, width px wide, through points in canvas pixels (a pixel's centre at .5).
+void drawPolyline(Canvas& c, const std::vector<std::pair<double, double>>& pts, uint32_t col, double width);
 
 struct Widget {
     Kind kind = Kind::Plate;
@@ -201,6 +204,8 @@ struct Widget {
     int layer = 3;
     bool hidden = false, disabled = false;
     Cond showIf, enableIf;
+    Cond onIf;                   // button: drawn lit while this holds, instead of by its action
+    bool stepper = true;         // number: false keeps the skin's "steppers" off this box
     double value = 0;
     Fill fill;
     Text text, header, row, selectRow;   // selectRow: the selected row of a list, when it has a font
@@ -324,6 +329,10 @@ public:
     Cond closeIf;                                  // first, while this holds
     std::string settingsView;                      // skin.json "standalone": its audio and MIDI settings as a modal
     std::vector<Binding> keys;                     // skin.json "keys": keyboard shortcuts, in the order given
+    // skin.json "steppers": a number drawn on one of these plates gets a down button at its left end and an
+    // up button at its right, each `width` px wide; the images are two tiles, at rest and held.
+    struct Stepper { int down = -1, up = -1, width = 0; };
+    std::map<int, Stepper> steppers;               // by the plate's image index
     const View* view(const std::string& name) const;
     const Json& table(const std::string& name) const;   // Null when missing
 };
@@ -399,6 +408,8 @@ unsigned platformKeyChar(unsigned codepoint, bool* shift);
 // where the platform's standalone has none.
 extern const bool kAudioSettings;
 void platformAudioSettings(PlatformWindow* w);
+// The audio driver's own control panel, where the standalone has one: an ASIO driver's, on Windows.
+void platformDriverPanel(PlatformWindow* w);
 // Its settings read out of that window, for a modal of the skin's: the audio API, output, input, sample
 // rate, buffer size (each one choice) and the MIDI inputs (any of them). False where it cannot be read.
 struct DeviceList {
@@ -488,6 +499,12 @@ public:
     bool keyDown(Key k, bool shift = false, bool ctrl = false, bool alt = false, unsigned ch = 0, bool fromHost = false);
     void keyChar(unsigned codepoint);
     bool wantsKeys() const;
+    // After keyDown, whether the character that key types is still to come, so the platform has to let it
+    // through rather than take it along with the key. True for a printable key while text entry has the
+    // keyboard: the character is the whole of such a key, keyDown does nothing with it on its own, and it
+    // still says the key was used so that the host never sees it. A named key (Enter, Escape, an arrow) is
+    // used by the entry itself and spends the character its key would have typed.
+    bool charPending() const;
     void releaseKeys();                          // hands the keyboard back, unless the skin has shortcuts
     void focusLost();                            // commits text entry, closes menus, drops list focus
     void tick();                                 // about 30 Hz: automation, repeats, tooltips, caret, animation
@@ -521,6 +538,10 @@ public:
     void setNorm(const Hit& h, double t, int which = 0);
     void setParam(int p, double plain);          // a whole gesture on one param (kinds, menus)
     void setParams(const std::vector<std::pair<int, double>>& values);   // one gesture over several
+    // For kinds that edit params themselves: beginParams starts one host gesture, which ends when the press does.
+    // editParam writes inside it, so a whole drag is one gesture.
+    void beginParams(const std::vector<int>& ps);
+    void editParam(int p, double plain);
     // A param template's params: the one for the current vars, or with "editAll" on and its var in
     // the template, one per listed value.
     std::vector<int> paramsFor(const Node& n, const std::string& tpl) const;
@@ -593,6 +614,7 @@ private:
     int statusParam_ = -1;
     Edit edit_;
     bool editing_on_ = false, caretOn_ = true, editDrag_ = false;
+    bool charPending_ = false;                   // the last key's character is still to come (charPending)
     Hit listFocus_;                              // a list with a selected row takes Delete
     Hit learnTarget_;                            // MIDI learn: the widget whose param learns
     bool learnOn_ = false;
@@ -603,7 +625,11 @@ private:
     int modalVeil_ = -1, modalBox_ = -1;         // the root's veil and embed for a modal (skin.cpp adds them)
     std::string modalShown_;                     // the view it shows, "" when closed
     bool closing_ = false;                       // the standalone closes without asking
-    double deviceSent_[6] = {-1, -1, -1, -1, -1, -1};   // the settings modal: each device param as last read
+    double deviceSent_[6] = {-1, -1, -1, -1, -1, -1};   // the settings view: each device param as last read
+    bool devicesShown_ = false;                          // the settings view was in sight at the last tick
+    int stepDir_ = 0;                            // a number's stepper held: -1 down, 1 up
+    const Skin::Stepper* stepperOf(const Node& n, int i) const;
+    void stepNumber(const Hit& h, int dir);      // one step of the param (or a hundredth of a continuous one)
 
     void rebuild();
     void build(Node& n, const std::string& view, Node* parent, const std::string& path, int depth);
@@ -711,6 +737,7 @@ private:
     void setModal(const std::string& view);
     void standaloneVar();
     bool readDevices();
+    bool settingsShown(const Node& n) const;
     void syncDevices();
     int listRowAt(const Hit& h, int y) const;
     void unlight(Node& n);                       // clears every list's right-clicked row    // the row of a list under y, -1 if none
