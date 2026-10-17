@@ -110,6 +110,11 @@ function(hollow_add_plugin target)
     target_include_directories(${vst2} PRIVATE "${fw}/third_party/vst2")
     target_link_libraries(${vst2} PRIVATE ${target}_lib)
     set_target_properties(${vst2} PROPERTIES OUTPUT_NAME "${P_NAME}" PREFIX "" LIBRARY_OUTPUT_DIRECTORY "${out}/VST2")
+    # clap-wrapper's make_clapfirst_plugins makes ${target}_all for the formats it builds; without
+    # this, building that aggregate (VS Code's CMake Tools picks it) silently leaves VST2 out.
+    if(TARGET ${target}_all)
+      add_dependencies(${target}_all ${vst2})
+    endif()
 
     if(WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 4 AND "DXI" IN_LIST HOLLOW_FORMATS)
       # The DXi lives in the 32-bit VST2 DLL and drives its AEffect. Microsoft's DirectShow
