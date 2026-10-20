@@ -52,6 +52,7 @@ struct Plugin final : Editor::Host {
     const clap_host_t* host;
     const clap_host_params_t* hostParams = nullptr;
     const clap_host_gui_t* hostGui = nullptr;
+    const clap_host_state_t* hostState = nullptr;
     std::shared_ptr<Skin> skin;
     std::unique_ptr<State> state;
     std::unique_ptr<Processor> proc;
@@ -65,8 +66,18 @@ struct Plugin final : Editor::Host {
     int midiFrames = 0;                              // and its length; events are kept inside it
     double rate = 44100;                             // from activate, for State::setLoad
     std::atomic<bool> rescan{false};                 // Processor::paramsChanged, served on the main thread
+    // The host hears once per change since the last save or load that the instance is modified, so it saves
+    // the instance with the project: 0 clean, 1 asked for the main thread, 2 told. A change the processor makes
+    // itself (a browser pick, a program change) otherwise reaches the host only as a value rescan, which no
+    // host takes as an edit, and the project reopens with what it last saved.
+    std::atomic<int> dirty{0};
 
     explicit Plugin(const clap_host_t* h) : host(h) {}
+
+    void checkDirty() {
+        int clean = 0;
+        if (hostState && state->modified() && dirty.compare_exchange_strong(clean, 1)) host->request_callback(host);
+    }
 
     // Processor::sendMidi: short messages as MIDI events, longer ones as sysex, on note-out port 0.
     // The host copies the sysex bytes during try_push, so they need not outlive the call.
@@ -214,6 +225,7 @@ struct Plugin final : Editor::Host {
         midiOut = nullptr;
         if (p->frames_count)
             state->setLoad(std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() * rate / p->frames_count);
+        checkDirty();
         return CLAP_PROCESS_CONTINUE;
     }
 
@@ -236,9 +248,10 @@ struct Plugin final : Editor::Host {
         return true;
     }
 
-    bool save(const clap_ostream_t* s) const {
+    bool save(const clap_ostream_t* s) {
         proc->saving();
         const std::string b = state->save();
+        dirty.store(0);
         for (size_t at = 0; at < b.size();) {
             const int64_t n = s->write(s, b.data() + at, b.size() - at);
             if (n <= 0) return false;
@@ -254,6 +267,7 @@ struct Plugin final : Editor::Host {
             b.append(buf, (size_t)n);
         }
         if (!state->load(b)) return false;
+        dirty.store(0);
         if (hostParams) hostParams->rescan(host, CLAP_PARAM_RESCAN_VALUES);   // the host re-reads every value
         return true;
     }
@@ -289,6 +303,7 @@ const clap_plugin_params_t kParams = {
     [](const clap_plugin_t* p, const clap_input_events_t* in, const clap_output_events_t* out) {
         self(p)->events(in);
         self(p)->drain(out);
+        self(p)->checkDirty();   // flush is what runs while the host is not processing
     },
 };
 
@@ -377,6 +392,7 @@ const clap_plugin_t* create(const clap_host_t* host) {
         Plugin* s = self(p);
         s->hostParams = (const clap_host_params_t*)s->host->get_extension(s->host, CLAP_EXT_PARAMS);
         s->hostGui = (const clap_host_gui_t*)s->host->get_extension(s->host, CLAP_EXT_GUI);
+        s->hostState = (const clap_host_state_t*)s->host->get_extension(s->host, CLAP_EXT_STATE);
         s->skin = loadSkin();
         s->state = std::make_unique<State>(s->skin ? skinParams(*s->skin) : std::vector<ParamDef>{});
         if (s->skin) applyLearnDefaults(*s->state, *s->skin);
@@ -417,6 +433,8 @@ const clap_plugin_t* create(const clap_host_t* host) {
     c.on_main_thread = [](const clap_plugin_t* p) {
         Plugin* s = self(p);
         if (s->rescan.exchange(false) && s->hostParams) s->hostParams->rescan(s->host, CLAP_PARAM_RESCAN_VALUES);
+        int asked = 1;
+        if (s->hostState && s->dirty.compare_exchange_strong(asked, 2)) s->hostState->mark_dirty(s->host);
     };
     return &c;
 }
