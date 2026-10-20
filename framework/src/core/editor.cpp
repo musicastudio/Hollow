@@ -3133,6 +3133,9 @@ bool Editor::key(Key k, unsigned character, bool shift, bool ctrl, bool alt) {
     }
     if (impl_->gui.window) platformHold(impl_->gui.window, true);
     const bool used = impl_->gui.keyDown(k, shift, ctrl, alt, ch, true);
+    // No WM_CHAR follows a key the host offered here, since the host kept the keyboard: the character it
+    // reported is the one text entry is waiting for.
+    if (used && impl_->gui.charPending()) impl_->gui.keyChar(character);
     if (impl_->gui.window) platformHold(impl_->gui.window, false);
     keyLog("host key char=%u ch=%c key=%d alt=%d ctrl=%d shift=%d used=%d", character, ch ? (char)ch : '.', (int)k, (int)alt, (int)ctrl,
            (int)shift, (int)used);

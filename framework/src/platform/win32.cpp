@@ -115,10 +115,11 @@ static bool modifierKey(WPARAM wp) {
 // the same problem the same way (juce_WindowsHooks_windows.cpp), and on Windows only: macOS routes keys
 // through the responder chain and X11 through input focus, neither of which a host sits in front of.
 //
-// What is deliberately NOT taken: any key the editor did not use, and the one key it uses without using
-// the message, which is the key text entry is typing with — that one has to go on and become a WM_CHAR,
-// which is the whole of the keystroke there. So the hook removes only keystrokes the editor has acted on,
-// and leaves only the half-used one, whose press the window's own procedure then offers again to no effect.
+// What is deliberately NOT taken: any key the editor did not use. The key text entry is typing with is
+// taken too, but translated first, so its WM_CHAR is already queued for the editor's window; and while the
+// editor wants keys, a WM_CHAR bound for its window goes straight to it. A host that types letters, or
+// runs key commands on them, from its own loop (Live, Cubase) would otherwise eat the character or act on
+// the press, and the entry would get only the few keys the host had no use for.
 struct KeyHook {
     HHOOK hook = nullptr;
     int refs = 0;
@@ -150,16 +151,31 @@ static LRESULT CALLBACK keyHookProc(int code, WPARAM wp, LPARAM lp) {
             Gui& g = *w->gui;
             // Whatever the editor uses the key for is taken from the host, text entry's own keys included:
             // a host that closes the plug-in's window on Escape must not see the Escape that just cancelled
-            // an edit, and the same goes for the Enter that committed one. What is left to go on is the key
-            // whose character text entry is waiting for (charPending), since blanking it would stop the
-            // WM_CHAR that is the whole of the keystroke; its press does nothing twice, so the window's own
-            // procedure offering it again is harmless.
-            if (!g.skin().keys.empty() && offerKey(g, msg.wParam) && !g.charPending()) {
-                keyLog("hook took msg=%04x wp=%02x hwnd=%p", (unsigned)msg.message, (unsigned)msg.wParam, (void*)msg.hwnd);
-                msg = {};                 // the host's loop sees nothing, so no accelerator and no WM_CHAR
+            // an edit, and the same goes for the Enter that committed one. The key whose character text entry
+            // is waiting for (charPending) is translated here, which queues its WM_CHAR for the editor's
+            // window, so the host's loop sees neither the press nor the character.
+            if (!g.skin().keys.empty() && offerKey(g, msg.wParam)) {
+                const bool typing = g.charPending();
+                if (typing) {
+                    TranslateMessage(&msg);
+                    w->ateKey = false;
+                }
+                keyLog("hook took msg=%04x wp=%02x hwnd=%p typing=%d", (unsigned)msg.message, (unsigned)msg.wParam, (void*)msg.hwnd,
+                       (int)typing);
+                msg = {};                 // the host's loop sees nothing, so no accelerator and no second WM_CHAR
                 msg.message = WM_USER;
                 return 0;
             }
+        }
+    } else if (code == HC_ACTION && wp == PM_REMOVE && (msg.message == WM_CHAR || msg.message == WM_SYSCHAR)) {
+        // A character for the editor's window while it wants keys is the editor's, wherever its key went.
+        PlatformWindow* w = windowForMessage(msg.hwnd);
+        if (w && w->gui->wantsKeys()) {
+            keyLog("hook char wp=%04x hwnd=%p", (unsigned)msg.wParam, (void*)msg.hwnd);
+            SendMessageW(msg.hwnd, msg.message, msg.wParam, msg.lParam);
+            msg = {};
+            msg.message = WM_USER;
+            return 0;
         }
     }
     return CallNextHookEx(self, code, wp, lp);
