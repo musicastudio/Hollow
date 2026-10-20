@@ -170,7 +170,6 @@ function(hollow_add_plugin target)
       set_target_properties(${vst2} PROPERTIES BUNDLE TRUE BUNDLE_EXTENSION vst MACOSX_BUNDLE_INFO_PLIST "${plist}")
       add_custom_command(TARGET ${vst2} POST_BUILD
         COMMAND "${CMAKE_COMMAND}" -E copy "${CMAKE_CURRENT_BINARY_DIR}/${vst2}_PkgInfo" "$<TARGET_BUNDLE_CONTENT_DIR:${vst2}>/PkgInfo"
-        COMMAND codesign -s - --force "$<TARGET_BUNDLE_DIR:${vst2}>"
         VERBATIM)
     endif()
   endif()
@@ -182,6 +181,19 @@ function(hollow_add_plugin target)
       set_target_properties(${target}_${t} PROPERTIES ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/implib/${t}")
     endif()
   endforeach()
+
+  # Every macOS bundle is sealed ad hoc as the last step of its build, after the Info.plist edits above: the
+  # linker signs only the binary, and a bundle without a seal over its resources is "damaged" to Gatekeeper.
+  if(APPLE)
+    foreach(t clap vst3 auv2 standalone vst2)
+      if(TARGET ${target}_${t})
+        add_custom_command(TARGET ${target}_${t} POST_BUILD
+          COMMAND codesign -s - --force "$<TARGET_BUNDLE_DIR:${target}_${t}>"
+          COMMAND codesign --verify --strict "$<TARGET_BUNDLE_DIR:${target}_${t}>"
+          VERBATIM)
+      endif()
+    endforeach()
+  endif()
 
   # BIN: each format into a folder of its own, a bundle as its whole folder. A VST3 is a folder everywhere
   # (clap-wrapper puts the binary two levels inside it off macOS too).
