@@ -478,6 +478,8 @@ public:
     int height() const { return h_; }
     int scale() const { return scale_; }         // pixel repeats from canvas to window (1 for a skin with "scales")
     double zoom() const { return zoom_; }        // the skin's scale the canvas is drawn at
+    double picked() const { return chosenScale_; }      // the scale chosen, before the display's factor
+    void setDisplayScale(double f);
     void setScale(double s);                     // one of the skin's "scales", else 1 to 4 pixel repeats
     std::string uiJson() const;
     void applyUi(const std::string& json, bool withScale = true);   // withScale: its "scale" too
@@ -583,6 +585,8 @@ private:
     const Skin* base_;                           // the skin at 1x
     std::shared_ptr<Skin> zoomed_;
     double zoom_ = 1;
+    double chosenScale_ = 1;                     // the scale chosen (GUI Scale), what is saved and shown; drawn is the nearest to
+    double display_ = 1;                         // it times the display's own factor, which only the standalone passes on
     State& state_;
     Editor::Host* host_;
     std::shared_ptr<Skin> owned_;

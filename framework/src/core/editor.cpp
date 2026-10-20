@@ -871,7 +871,7 @@ int Gui::buttonValue(const Node& n, int i) const {
          : w.source == Widget::MidiIn || w.source == Widget::Modified ? sourceValue(w) == "1"
          : w.action.type == Action::Goto || w.action.type == Action::Set ? active(n, i)
          : w.action.type == Action::Value ? n.w[i].param >= 0 && state_.get(n.w[i].param) == w.action.amount
-         : w.action.type == Action::Scale && w.action.amount > 0 ? std::fabs(w.action.amount - (base_->scales.empty() ? scale_ : zoom_)) < 1e-9
+         : w.action.type == Action::Scale && w.action.amount > 0 ? std::fabs(w.action.amount - chosenScale_) < 1e-9
          : w.action.type == Action::Step ? 0 : index(n, i);
 }
 
@@ -883,7 +883,7 @@ std::string Gui::sourceValue(const Widget& w) const {
     case Widget::MidiIn: return Clock::now() < midiUntil_ ? "1" : "0";
     case Widget::Modified: return state_.modified() ? "1" : "0";
     case Widget::Voices: return state_.voices() < 0 ? "" : formatInt(w.format.empty() ? "%d" : w.format, state_.voices());
-    case Widget::Scale: return (base_->scales.empty() ? std::to_string(scale_) : formatNumber("%g", zoom_)) + "x";
+    case Widget::Scale: return formatNumber("%g", chosenScale_) + "x";
     default: return "";
     }
 }
@@ -2447,7 +2447,7 @@ void Gui::scaleMenu(Rect at) {
         MenuEntry e;
         e.label = formatNumber("%g", scales[i]) + "x";
         e.id = (int)i + 1;
-        e.current = scales[i] == (base_->scales.empty() ? scale_ : zoom_);
+        e.current = scales[i] == chosenScale_;
         menu.push_back(e);
     }
     openMenu(std::move(menu), at, "", [this, scales](int id) {
@@ -2889,20 +2889,35 @@ void Gui::resizeWindow() {
 }
 
 // A skin with "scales" is loaded again at the one nearest s and drawn at that size; any other is drawn at
-// 1x and shown at s (1 to 4) pixel repeats.
+// 1x and shown at s (1 to 4) pixel repeats. In the standalone what is drawn is the nearest to s times the
+// display's factor, so 1x on a 200% display is as large as on a 100% one; s stays the choice.
 void Gui::setScale(double s) {
     if (base_->scales.empty()) {
-        int k = std::clamp((int)std::lround(s), 1, 4);
-        if (k == scale_) return;
+        const double was = chosenScale_;
+        chosenScale_ = std::clamp((int)std::lround(s), 1, 4);
+        int k = std::clamp((int)std::lround(chosenScale_ * display_), 1, 4);
+        if (k == scale_) {
+            if (chosenScale_ != was) { saveUi(); invalidateAll(); }
+            return;
+        }
         scale_ = k;
         resizeWindow();
         saveUi();
         return;
     }
-    double z = base_->scales[0];
-    for (double c : base_->scales)
-        if (std::fabs(c - s) < std::fabs(z - s)) z = c;
-    if (z == zoom_) return;
+    auto nearest = [&](double v) {
+        double z = base_->scales[0];
+        for (double c : base_->scales)
+            if (std::fabs(c - v) < std::fabs(z - v)) z = c;
+        return z;
+    };
+    const double was = chosenScale_;
+    chosenScale_ = nearest(s);
+    double z = nearest(chosenScale_ * display_);
+    if (z == zoom_) {
+        if (chosenScale_ != was) { saveUi(); invalidateAll(); }
+        return;
+    }
     std::string ui = uiJson(), err;
     auto old = std::move(zoomed_);   // the tree still points into it until applyUi rebuilds
     zoomed_ = z == 1 ? nullptr : scaledSkin(*base_, z, &err);
@@ -2912,6 +2927,13 @@ void Gui::setScale(double s) {
     applyUi(ui, false);
     resizeWindow();
     saveUi();
+}
+
+// The display's own factor (the standalone's DPI over 96 on Windows): the chosen scale is drawn again for it.
+void Gui::setDisplayScale(double f) {
+    if (f <= 0 || f == display_) return;
+    display_ = f;
+    setScale(chosenScale_);
 }
 
 void Gui::writeEmbeds(const Node& n, std::string& o) const {
@@ -2950,7 +2972,7 @@ void Gui::writeScroll(const Node& n, std::string& o) const {
 }
 
 std::string Gui::uiJson() const {
-    std::string o = "{\"scale\":" + (base_->scales.empty() ? std::to_string(scale_) : formatNumber("%g", zoom_)) + ",\"vars\":";
+    std::string o = "{\"scale\":" + formatNumber("%g", chosenScale_) + ",\"vars\":";
     writeVars(vars_, o);
     o += ",\"embeds\":{";
     writeEmbeds(root_, o);
@@ -2969,7 +2991,7 @@ void Gui::saveUi() {
 
 void Gui::applyUi(const std::string& json, bool withScale) {
     Json j;
-    double scale = base_->scales.empty() ? scale_ : zoom_;
+    double scale = chosenScale_;
     vars_ = skin_->vars;
     if (parseJson(json, j) && j.type == Json::Object) {
         scale = j["scale"].num(scale);
@@ -3056,6 +3078,8 @@ bool Gui::openPopup(const std::string& view) {
     p.isPopup_ = true;
     p.zoomed_ = zoomed_;
     p.zoom_ = zoom_;
+    p.chosenScale_ = chosenScale_;
+    p.display_ = display_;
     p.scale_ = scale_;
     p.skin_ = skin_;
     std::string ui = "{\"vars\":{";
@@ -3197,10 +3221,15 @@ void Editor::detach() {
 
 int Editor::width() const { return impl_->gui.width() * impl_->gui.scale(); }
 int Editor::height() const { return impl_->gui.height() * impl_->gui.scale(); }
-double Editor::scale() const { return impl_->gui.skin().scales.empty() ? impl_->gui.scale() : impl_->gui.zoom(); }
+double Editor::scale() const { return impl_->gui.picked(); }
 void Editor::setScale(double s) {
     if (impl_->gui.window) platformHold(impl_->gui.window, true);
     impl_->gui.setScale(s);
+    if (impl_->gui.window) platformHold(impl_->gui.window, false);
+}
+void Editor::setDisplayScale(double f) {
+    if (impl_->gui.window) platformHold(impl_->gui.window, true);
+    impl_->gui.setDisplayScale(f);
     if (impl_->gui.window) platformHold(impl_->gui.window, false);
 }
 

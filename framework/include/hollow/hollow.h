@@ -216,6 +216,9 @@ public:
     int height() const;
     double scale() const;                 // one of the skin's "scales", else 1..4; remembered in State::ui()
     void setScale(double s);              // resizes the window and calls Host::resize
+    // The display's own factor, which the standalone app passes on (DPI / 96 on Windows): the editor is drawn
+    // at the skin scale nearest scale() times it, so the chosen size looks the same on any display.
+    void setDisplayScale(double f);
     // A key the host delivered through its plug-in API rather than to the window, for the hosts that keep
     // the keyboard to themselves (REAPER's "send all keyboard input to plugin"). `character` is what the key
     // typed, as the host reported it and so as the layout made it, 0 for a key that types nothing; which key

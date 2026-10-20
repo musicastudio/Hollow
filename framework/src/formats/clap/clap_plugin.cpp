@@ -398,7 +398,14 @@ const clap_plugin_gui_t kGui = {
         return true;
     },
     [](const clap_plugin_t* p) { self(p)->editor.reset(); },
-    [](const clap_plugin_t*, double) { return false; },   // the editor keeps its own integer scale
+    // The standalone's display factor, which the editor draws its chosen scale at; a host's is the host's own
+    // business, so the editor keeps its own scale there.
+    [](const clap_plugin_t* p, double scale) {
+        Plugin* s = self(p);
+        if (!s->standalone() || !s->editor) return false;
+        s->editor->setDisplayScale(scale);
+        return true;
+    },
     [](const clap_plugin_t* p, uint32_t* w, uint32_t* h) {
         const Editor* e = self(p)->editor.get();
         if (!e) return false;

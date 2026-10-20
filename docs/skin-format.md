@@ -328,7 +328,7 @@ A glyph strip is a PNG holding the 256 characters of Latin-1 (codes 0..255) left
 
 With `skin.json` `"scales": [0.5, 0.75, 1, 1.5, 2]` the skin is drawn at each scale it lists: the runtime loads it again with every rect, pad, offset, row height, column width, view size, slice band and font size multiplied (rects by their edges, so rects that meet at 1x still meet), its `density` multiplied with them, and each image from `scales/<scale>/<group>/<name>.png` (`scales/0.75/knobs/rotary_large.png`), or, where the skin has no such file, the 1x image resampled tile by tile. Sizes round half away from zero. The window is that load's root view, shown one pixel to one, so every scale is drawn at its own resolution; the session keeps the scale. Picture fonts stay at 1x unless the skin has a strip drawn for the scale (`scales/<s>/fonts/`), so a skin with scales wants TrueType fonts or a strip per scale.
 
-Without `"scales"` the runtime draws at scale 1 into a buffer and presents it at an integer scale 1..4 with nearest-neighbour pixel replication, so the artwork stays sharp. A `scale` action offers the scales either way.
+Without `"scales"` the runtime draws at scale 1 into a buffer and presents it at an integer scale 1..4 with nearest-neighbour pixel replication, so the artwork stays sharp. A `scale` action offers the scales either way. In the standalone the scale chosen is drawn at the one nearest to it times the display's own factor (`Editor::setDisplayScale`, from the app's `set_scale`: DPI over 96 on Windows), so 1x looks the same size on a 100% and a 200% display; the scale saved and shown stays the one chosen.
 
 ## Live editing
 
