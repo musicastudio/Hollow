@@ -287,6 +287,7 @@ void State::assign(int cc, int param) {
 void State::pushMidi(const uint8_t* bytes, int size) {
     uint32_t head = impl_->midiHead.load(std::memory_order_relaxed);
     if (size < 1 || size > 3 || head - impl_->midiTail.load(std::memory_order_acquire) >= 256) return;
+    impl_->midiCount.fetch_add(1, std::memory_order_relaxed);   // the editor's own notes light the MIDI lamp too
     Impl::Msg& m = impl_->midi[head % 256];
     std::memcpy(m.b, bytes, (size_t)size);
     m.n = (uint8_t)size;

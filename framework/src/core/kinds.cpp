@@ -29,7 +29,15 @@ static void frame(Canvas& c, int x, int y, int w, int h, uint32_t col, int k = 1
 }
 // A square dot k px wide centred on (x, y): a pixel at density 1.
 static void dot(Canvas& c, int x, int y, uint32_t col, int k) { fillRect(c, {x - (k - 1) / 2, y - (k - 1) / 2, k, k}, col); }
-static uint32_t colourField(const Widget& w, const char* key, uint32_t def) { return parseColour(w.json[key].str(), def); }
+static uint32_t colourField(Gui& g, const Hit& h, const char* key, uint32_t def) { return g.colour(*h.node, g.wid(h).json[key].str(), def); }
+
+// A colour field a kind draws once per operator (a box, a track): {n} in it is the operator's number, 1..8,
+// so "@op{n}" gives each its own colour from the palette.
+static uint32_t numberedColour(Gui& g, const Hit& h, const char* key, int n, uint32_t def) {
+    std::string s = g.wid(h).json[key].str();
+    for (size_t at; (at = s.find("{n}")) != std::string::npos;) s.replace(at, 3, std::to_string(n));
+    return g.colour(*h.node, s, def);
+}
 
 // Bresenham from (x0, y0) to (x1, y1), the end point not drawn, k px thick.
 static void line(Canvas& c, int x0, int y0, int x1, int y1, uint32_t col, int k = 1) {
@@ -250,7 +258,7 @@ static void morphDraw(Gui& g, Canvas& c, const Hit& h, Rect r) {
         }
     }
     st.morphable = morphable(g, st);
-    uint32_t col = st.morphable ? colourField(w, "morphColour", 0xffb33733) : colourField(w, "colour", 0xffdbdbdb);
+    uint32_t col = st.morphable ? colourField(g, h, "morphColour", 0xffb33733) : colourField(g, h, "colour", 0xffdbdbdb);
     int left = (int)std::round(m.cx0 + (m.cx1 - m.cx0) * m.X - s * 0.5), top = (int)std::round(m.cy1 - (m.cy1 - m.cy0) * m.Y - s * 0.5);
     frame(c, left, top, s, s, col, g.skin().lw());
 }
@@ -620,8 +628,9 @@ static void inkCentred(Canvas& c, const Font& f, const std::string& s, Rect b) {
 // box straight down or up its column to the destination's row, then runs along the row to the box's
 // edge with an arrow, unbroken: the amount tags of a skin draw over it. Carriers run down into the
 // bus, which starts at the first of them. A source's lines are light while it is on and grey while
-// off; the bus is always light. "scale" shrinks the whole drawing (a thumbnail), and "box" draws the
-// boxes in that colour, numbered in the text font if there is one, where no operator art sits over.
+// off; the bus is always light, and "wire" colours an operator's lines while it is on ({n}: its number, so "@op{n}_line"
+// gives each its own). "scale" shrinks the whole drawing (a thumbnail), and "box" draws the
+// boxes in that colour ({n}: the box's number), numbered in the text font if there is one, where no operator art sits over.
 static void wiresDraw(Gui& g, Canvas& c, const Hit& h, Rect r) {
     WiresState& st = kindState<WiresState>(g, h);
     st.sig = wireInputs(g, h);
@@ -652,7 +661,7 @@ static void wiresDraw(Gui& g, Canvas& c, const Hit& h, Rect r) {
     for (int i = 0; i < 9; ++i)
         for (int j = 0; j < 11; ++j) {
             if (!nz(i, j) || j == 10) continue;   // pan draws no wire
-            col = st.sig[(size_t)(99 + i)] != 0 ? light : grey;
+            col = st.sig[(size_t)(99 + i)] == 0 ? grey : i < 8 && w.json.has("wire") ? numberedColour(g, h, "wire", i + 1, light) : light;
             int x = X(cx(i));
             if (j == 9) {
                 vl(x, Y(cy(i)), Y(busY));
@@ -671,7 +680,7 @@ static void wiresDraw(Gui& g, Canvas& c, const Hit& h, Rect r) {
     if (!w.json.has("box")) return;
     for (int i = 0; i < 8; ++i) {
         Rect b{r.x + D(cx(i) - hw), r.y + D(cy(i) - hh), D(cx(i) + hw) - D(cx(i) - hw), D(cy(i) + hh) - D(cy(i) - hh)};
-        fillRect(c, b, colourField(w, "box", 0xff6b7070));
+        fillRect(c, b, numberedColour(g, h, "box", i + 1, 0xff6b7070));
         if (w.text.font >= 0) inkCentred(c, g.skin().fonts[w.text.font], std::to_string(i + 1), b);
     }
 }
@@ -684,6 +693,8 @@ static void wiresTick(Gui& g, const Hit& h, Rect r) {
 
 // Tile (selected ? 1 : 0) + (off ? 2 : 0): selected while var op names this box (never "in"). With a text
 // font the box's letter is drawn over it, centred on its ink in the face above the art's 2 px foot.
+// With "tint" the box is the art times that colour (the operator's) and keeps it when selected: a ring in
+// "ring" (default #e8f3efff) around its art says so instead of the selected tile.
 static void boxDraw(Gui& g, Canvas& c, const Hit& h, Rect r) {
     const Widget& w = g.wid(h);
     if (w.image < 0) return;
@@ -692,7 +703,21 @@ static void boxDraw(Gui& g, Canvas& c, const Hit& h, Rect r) {
     bool off = g.inst(h).param >= 0 && g.plain(*h.node, h.i) == 0;
     const Image& img = g.skin().images[w.image];
     Rect t = img.tile(0);
-    drawImage(c, img, (selected ? 1 : 0) + (off ? 2 : 0), {r.x, r.y, t.w, t.h});
+    const uint32_t tint = colourField(g, h, "tint", 0);
+    drawImage(c, img, (selected && !tint ? 1 : 0) + (off ? 2 : 0), {r.x, r.y, t.w, t.h}, false, nullptr, tint);
+    if (tint && selected) {   // the art's opaque bounds, a line width out
+        int x0 = t.w, y0 = t.h, x1 = -1, y1 = -1;
+        for (int y = 0; y < t.h; ++y)
+            for (int x = 0; x < t.w; ++x)
+                if (img.px[(size_t)(t.y + y) * img.w + (size_t)(t.x + x)] >> 24 >= 128) x0 = std::min(x0, x), x1 = std::max(x1, x), y0 = std::min(y0, y), y1 = std::max(y1, y);
+        const int k = g.skin().lw();
+        const uint32_t ring = colourField(g, h, "ring", 0xffe8f3ef);
+        Rect o = Rect{r.x + x0 - k, r.y + y0 - k, x1 - x0 + 1 + 2 * k, y1 - y0 + 1 + 2 * k} & r;   // inside the widget, which clips
+        fillRect(c, {o.x, o.y, o.w, k}, ring);
+        fillRect(c, {o.x, o.y + o.h - k, o.w, k}, ring);
+        fillRect(c, {o.x, o.y + k, k, o.h - 2 * k}, ring);
+        fillRect(c, {o.x + o.w - k, o.y + k, k, o.h - 2 * k}, ring);
+    }
     if (w.text.font >= 0 && !letter.empty()) inkCentred(c, g.skin().fonts[w.text.font], letter, {r.x, r.y, t.w, t.h - g.skin().dp(2)});
 }
 
@@ -1033,9 +1058,9 @@ static std::vector<double> curveBuffer(const EnvMap& mp, const std::vector<int>&
 // (the fill under the curve), curve, handle (an unselected point's inside) and dots (the loop's dotted
 // segment). A skin with a dark display sets them to suit it.
 struct EnvColours { uint32_t grid, area, curve, handle, dots; };
-static EnvColours envColours(const Widget& w) {
-    return {colourField(w, "grid", 0xffc3c3c3), colourField(w, "area", 0xa5fbffff), colourField(w, "curve", 0xff888888),
-            colourField(w, "handle", 0xfffdfdfd), colourField(w, "dots", 0xff0c0c0c)};
+static EnvColours envColours(Gui& g, const Hit& h) {
+    return {colourField(g, h, "grid", 0xffc3c3c3), colourField(g, h, "area", 0xa5fbffff), colourField(g, h, "curve", 0xff888888),
+            colourField(g, h, "handle", 0xfffdfdfd), colourField(g, h, "dots", 0xff0c0c0c)};
 }
 
 // Step 7: the fill from the curve down, then the anti-aliased curve (5 x 5 supersampling, a 7 x 7
@@ -1188,7 +1213,7 @@ static void envDraw(Gui& g, Canvas& c, const Hit& h, Rect r) {
     double m, o;
     viewOf(g, e, st, m, o);
     EnvMap mp{e, m / e.d, o};
-    const EnvColours k = envColours(g.wid(h));
+    const EnvColours k = envColours(g, h);
     const Env& env = st.env;
     int count = (int)env.count(), last = count - 1;
     bool sync = g.inst(h).param >= 0 && g.plain(*h.node, h.i) > 0.5;
@@ -1610,7 +1635,7 @@ static void ksDraw(Gui& g, Canvas& c, const Hit& h, Rect r) {
     }
     Rect saved = c.clip;
     c.clip = c.clip & Rect{e.Px0, e.Py0 - (e.isStatic ? e.D(3) : 0), e.Px1 - e.Px0, e.Py1 - e.Py0 + (e.isStatic ? e.D(3) : 0)};
-    const EnvColours k = envColours(g.wid(h));
+    const EnvColours k = envColours(g, h);
     paintGraph(c, e, curveBuffer(mp, xs, ys, slopes), k);
     if (!e.isStatic)
         for (int i = 0; i < n; ++i) {
@@ -2147,6 +2172,7 @@ struct StageModelGeo {
     StageInputs own;
     StageCurve curve;                 // this widget's
     std::vector<StageCurve> others;   // overlay curves
+    std::vector<std::string> otherVals;   // and the var's value each is drawn for
     std::vector<StageVal> t, l;       // each point's time and level
     std::vector<int> hx, hy, hi;      // handles in view, and which point each is
     const Font* font = nullptr;       // for the time labels
@@ -2189,7 +2215,10 @@ static StageModelGeo stageModelGeo(Gui& g, const Hit& h, Rect r) {
         const Json& ov = j["overlay"];
         std::string var = ov["var"].str(), cur = g.subst(*h.node, "{" + var + "}");
         for (auto& v : ov["values"].items)
-            if (jsonText(v) != cur) e.others.push_back(stageCurve(g, h, stageInputs(g, h, var, jsonText(v)).in));
+            if (jsonText(v) != cur) {
+                e.others.push_back(stageCurve(g, h, stageInputs(g, h, var, jsonText(v)).in));
+                e.otherVals.push_back(jsonText(v));
+            }
         all.insert(all.end(), e.others.begin(), e.others.end());
     }
     const std::vector<Hit> peers = stagePeers(g, h);
@@ -2268,10 +2297,10 @@ static void stageModelDraw(Gui& g, Canvas& c, const Hit& h, Rect r, const StageM
     const Widget& w = g.wid(h);
     const StageView& vw = e.vw;
     const int k = g.skin().lw();
-    uint32_t grid = colourField(w, "grid", 0xffc3c3c3), area = colourField(w, "area", 0xa5fbffff), curve = colourField(w, "curve", 0xff888888),
-             inside = colourField(w, "handle", 0xfffdfdfd), dots = colourField(w, "dots", 0xff0c0c0c),
-             faint = colourField(w, "overlayCurve", (curve & 0x00ffffff) | 0x60000000),
-             areaBottom = colourField(w, "area2", (area & 0x00ffffff) | ((uint32_t)((area >> 24) * 0.15) << 24));
+    uint32_t grid = colourField(g, h, "grid", 0xffc3c3c3), area = colourField(g, h, "area", 0xa5fbffff), curve = colourField(g, h, "curve", 0xff888888),
+             inside = colourField(g, h, "handle", 0xfffdfdfd), dots = colourField(g, h, "dots", 0xff0c0c0c),
+             faint = colourField(g, h, "overlayCurve", (curve & 0x00ffffff) | 0x60000000),
+             areaBottom = colourField(g, h, "area2", (area & 0x00ffffff) | ((uint32_t)((area >> 24) * 0.15) << 24));
     Rect saved = c.clip;
     c.clip = c.clip & r;
     // Time grid: a dotted line at a round step, roughly every 80 px.
@@ -2294,13 +2323,22 @@ static void stageModelDraw(Gui& g, Canvas& c, const Hit& h, Rect r, const StageM
     int zero = vw.lo < 0 && vw.hi > 0 ? vw.Y(0.0) : -1;
     if (zero >= 0) hline(c, vw.in.x, zero, vw.in.w, grid);
     int base = zero >= 0 ? zero : vw.in.y + vw.in.h - 1;
-    for (auto& o : e.others) stageTrace(g, c, vw, o, faint, 0, 1, 0, 0, base);
-    stageTrace(g, c, vw, e.curve, curve, colourField(w, "glow", 0), w.json["width"].num(1), area, areaBottom, base);
+    // Each overlay curve in "overlayCurve" (default the curve's colour, faded) with the overlay's var at that curve's
+    // value, so "@op{op}_line" draws every operator's in its own colour.
+    const std::string ovVar = "{" + w.json["overlay"]["var"].str() + "}", ovCol = w.json[w.json.has("overlayCurve") ? "overlayCurve" : "curve"].str();
+    for (size_t i = 0; i < e.others.size(); ++i) {
+        std::string s = ovCol;
+        for (size_t at; (at = s.find(ovVar)) != std::string::npos;) s.replace(at, ovVar.size(), e.otherVals[i]);
+        uint32_t col = g.colour(*h.node, s, faint);
+        if (!w.json.has("overlayCurve")) col = (col & 0x00ffffff) | 0x60000000;
+        stageTrace(g, c, vw, e.others[i], col, 0, 1, 0, 0, base);
+    }
+    stageTrace(g, c, vw, e.curve, curve, colourField(g, h, "glow", 0), w.json["width"].num(1), area, areaBottom, base);
     int ko = (int)std::lround(vw.X(vw.a.keyOff));
     if (ko >= vw.in.x && ko < vw.in.x + vw.in.w)
         for (int y = vw.in.y; y < vw.in.y + vw.in.h; y += 2 * k) fillRect(c, {ko, y, 1, k}, dots);
     StageState& st = kindState<StageState>(g, h);
-    uint32_t ring = colourField(w, "ring", 0);
+    uint32_t ring = colourField(g, h, "ring", 0);
     for (size_t i = 0; i < e.hx.size(); ++i) handleDot(g, c, e.hx[i] + 0.5, e.hy[i] + 0.5, inside, ring, st.drag == e.hi[i]);
     c.clip = saved;
 }
@@ -2411,13 +2449,13 @@ static void stageDraw(Gui& g, Canvas& c, const Hit& h, Rect r) {
     if (stageModel(w)) return stageModelDraw(g, c, h, r, stageModelGeo(g, h, r));
     StageGeo e = stageGeo(g, h, r);
     const int k = g.skin().lw();
-    uint32_t grid = colourField(w, "grid", 0xffc3c3c3), area = colourField(w, "area", 0xa5fbffff), curve = colourField(w, "curve", 0xff888888),
-             inside = colourField(w, "handle", 0xfffdfdfd), dots = colourField(w, "dots", 0xff0c0c0c);
+    uint32_t grid = colourField(g, h, "grid", 0xffc3c3c3), area = colourField(g, h, "area", 0xa5fbffff), curve = colourField(g, h, "curve", 0xff888888),
+             inside = colourField(g, h, "handle", 0xfffdfdfd), dots = colourField(g, h, "dots", 0xff0c0c0c);
     Rect saved = c.clip;
     c.clip = c.clip & r;
     if (e.zero >= 0) hline(c, e.in.x, e.zero, e.in.w, grid);
     int base = e.zero >= 0 ? e.zero : e.in.y + e.in.h - 1;
-    uint32_t area2 = colourField(w, "area2", area);
+    uint32_t area2 = colourField(g, h, "area2", area);
     for (size_t i = 0; i + 1 < e.x.size(); ++i)   // the area between the curve and its base, column by column
         for (int x = e.x[i]; x < e.x[i + 1]; ++x) {
             int y = e.y[i] + (int)std::lround((e.y[i + 1] - e.y[i]) * double(x - e.x[i]) / std::max(1, e.x[i + 1] - e.x[i]));
@@ -2428,9 +2466,9 @@ static void stageDraw(Gui& g, Canvas& c, const Hit& h, Rect r) {
     std::vector<std::pair<double, double>> pts;   // the curve, smooth
     for (size_t i = 0; i < e.x.size(); ++i) pts.push_back({e.x[i] + 0.5, e.y[i] + 0.5});
     if (pts.size() == 1) pts.push_back(pts[0]);
-    drawCurve(g, c, pts, curve, colourField(w, "glow", 0), w.json["width"].num(1));
+    drawCurve(g, c, pts, curve, colourField(g, h, "glow", 0), w.json["width"].num(1));
     StageState& st = kindState<StageState>(g, h);
-    uint32_t ring = colourField(w, "ring", 0);
+    uint32_t ring = colourField(g, h, "ring", 0);
     for (size_t i = 0; i < e.hx.size(); ++i) {
         if (e.t[i].param < 0 && e.l[i].param < 0) continue;
         handleDot(g, c, e.hx[i] + 0.5, e.hy[i] + 0.5, inside, ring, st.drag == (int)i);
@@ -2534,7 +2572,7 @@ static void fseqDraw(Gui& g, Canvas& c, const Hit& h, Rect r) {
     int n = f["frames"].integer();
     if (n < 2) return;
     const int k = g.skin().lw();
-    uint32_t col = colourField(w, "line", 0xffffffff), col2 = colourField(w, "line2", 0xffc80800), dots = colourField(w, "dots", 0xffc80800);
+    uint32_t col2 = colourField(g, h, "line2", 0xffc80800), dots = colourField(g, h, "dots", 0xffc80800);
     bool u = j["layer"].str() == "u";
     const std::string& pitch = f["pitch"].s;
     std::vector<int> seen;   // the range: the 2nd to 98th percentile of what is heard, so a stray frame does not squash the rest
@@ -2552,7 +2590,8 @@ static void fseqDraw(Gui& g, Canvas& c, const Hit& h, Rect r) {
     auto Y = [&](int b) { return r.y + (r.h - 1) - (int)std::lround((std::clamp(b, lo, hi) - lo + 1) * (r.h - 1) / span); };
     Rect saved = c.clip;
     c.clip = c.clip & r;
-    for (int t = 0; t < 8; ++t) {
+    for (int t = 0; t < 8; ++t) {   // track t in "line", {n} its operator's number
+        const uint32_t col = numberedColour(g, h, "line", t + 1, 0xffffffff);
         const std::string& fr = f[u ? "ufreq" : "vfreq"][(size_t)t].s;
         const std::string& lv = f[u ? "ulevel" : "vlevel"][(size_t)t].s;
         for (int i = 0; i + 1 < n; ++i) {
@@ -2569,7 +2608,7 @@ static void fseqDraw(Gui& g, Canvas& c, const Hit& h, Rect r) {
         for (int y = r.y; y < r.y + r.h; y += 3 * k) fillRect(c, {x, y, k, 2 * k}, dots);
     }
     if (int q = g.paramOf(h, j["position"].str()); q >= 0)   // where playback is, a solid line in "cursor"
-        fillRect(c, {X(std::clamp((int)std::lround(g.state().get(q)), 0, n - 1)), r.y, k, r.h}, colourField(w, "cursor", 0xffe8b84b));
+        fillRect(c, {X(std::clamp((int)std::lround(g.state().get(q)), 0, n - 1)), r.y, k, r.h}, colourField(g, h, "cursor", 0xffe8b84b));
     c.clip = saved;
 }
 
@@ -2590,7 +2629,7 @@ static void levelScaleDraw(Gui& g, Canvas& c, const Hit& h, Rect r) {
     double bp = j["breakBase"].num(21) + get("breakPoint", 39);
     double depth[2] = {get("leftDepth", 0), get("rightDepth", 0)};
     int curve[2] = {(int)get("leftCurve", 0), (int)get("rightCurve", 0)};
-    uint32_t col = colourField(w, "line", 0xffffffff), grid = colourField(w, "grid", 0x80ffffff), dots = colourField(w, "dots", 0xffc80800);
+    uint32_t col = colourField(g, h, "line", 0xffffffff), grid = colourField(g, h, "grid", 0x80ffffff), dots = colourField(g, h, "dots", 0xffc80800);
     int mid = r.y + r.h / 2;
     hline(c, r.x, mid, r.w, grid);
     auto Y = [&](int note) {
@@ -2613,11 +2652,12 @@ static void levelScaleDraw(Gui& g, Canvas& c, const Hit& h, Rect r) {
 // Fields: "low", "high" (params, MIDI notes), "shift" (a param in semitones, optional), "first" and "count"
 // (the keys shown, default 0 and 128), colours white, black, range (white keys inside the range), rangeBlack,
 // gap (between keys), arrow (the shift's triangle and label) and rail. Dragging a key moves the nearer end of
-// the range to it. With "shift" a strip over the keys is its slider: a rail under the keys the shift's range
-// reaches from "centre" (default 60, middle C), a tick at no shift, and a triangle over the key the centre
-// moves to, labelled +1, -12 and so on in the widget's text font on the side it moved to, but never left of
-// "labelLeft" (skin px from the widget's left, clear of a caption there). A press on the rail puts the triangle
-// there and a drag slides it; the strip either side of the rail is the skin's.
+// the range to it, and on past the other end: with low above high the range wraps, every key lit but those
+// between the two, as the FS1R plays them. With "shift" a strip over the keys is its slider: a rail under the
+// keys the shift's range reaches from "centre" (default 60, middle C), a tick at no shift, and a triangle over
+// the key the centre moves to, labelled +1, -12 and so on in the widget's text font on the side it moved to,
+// but never left of "labelLeft" (skin px from the widget's left, clear of a caption there). A press on the
+// rail puts the triangle there and a drag slides it; the strip either side of the rail is the skin's.
 struct KeyRangeState : SigState {
     int drag = 0;   // 1 low, 2 high, 3 shift
 };
@@ -2701,14 +2741,13 @@ static void keyRangeDraw(Gui& g, Canvas& c, const Hit& h, Rect r) {
     const Widget& w = g.wid(h);
     KeyGeo k = keyGeo(g, h, r);
     int lo = (int)paramValue(g, h, "low", 0), hi = (int)paramValue(g, h, "high", 127);
-    if (hi < lo) std::swap(lo, hi);
-    uint32_t white = colourField(w, "white", 0xffe6ecee), black = colourField(w, "black", 0xff1d2224), range = colourField(w, "range", 0xff82ca9c),
-             rangeBlack = colourField(w, "rangeBlack", 0xff3f7a55), gap = colourField(w, "gap", 0xff0c1112), arrow = colourField(w, "arrow", 0xff17301f);
+    uint32_t white = colourField(g, h, "white", 0xffe6ecee), black = colourField(g, h, "black", 0xff1d2224), range = colourField(g, h, "range", 0xff82ca9c),
+             rangeBlack = colourField(g, h, "rangeBlack", 0xff3f7a55), gap = colourField(g, h, "gap", 0xff0c1112), arrow = colourField(g, h, "arrow", 0xff17301f);
     fillRect(c, k.kb, gap);
     for (int pass = 0; pass < 2; ++pass)
         for (int n = k.first; n < k.first + k.count; ++n)
             if (blackKey(n) == (pass == 1)) {
-                bool in = n >= lo && n <= hi;
+                bool in = lo <= hi ? n >= lo && n <= hi : n >= lo || n <= hi;   // low above high: all but the gap
                 fillRect(c, keyRect(k, n), pass ? (in ? rangeBlack : black) : (in ? range : white));
             }
     if (!k.strip) return;
@@ -2716,7 +2755,7 @@ static void keyRangeDraw(Gui& g, Canvas& c, const Hit& h, Rect r) {
     double centre = w.json["centre"].num(60);
     auto X = [&](double note) { return k.kb.x + (note - k.first + 0.5) * k.semitone; };
     auto [x0, x1] = shiftRail(g, h, k);
-    uint32_t rail = colourField(w, "rail", (arrow & 0xffffff) | 0x66000000);
+    uint32_t rail = colourField(g, h, "rail", (arrow & 0xffffff) | 0x66000000);
     double ty = r.y + k.track, lw = g.skin().lw(), tick = g.skin().dp(2);
     fillRect(c, {(int)std::lround(x0), (int)ty, (int)std::lround(x1 - x0), (int)lw}, rail);
     fillRect(c, {(int)X(centre), (int)ty, (int)lw, (int)(tick + lw)}, rail);   // no shift: a tick under the rail, clear of the label
@@ -2744,7 +2783,8 @@ static bool keyRangeDown(Gui& g, const Hit& h, Rect r, int x, int y, bool) {
         return true;
     }
     int n = keyAt(k, x, y), lo = (int)paramValue(g, h, "low", 0), hi = (int)paramValue(g, h, "high", 127);
-    st.drag = n <= lo ? 1 : n >= hi ? 2 : n - lo < hi - n ? 1 : 2;
+    int dl = std::abs(n - lo), dh = std::abs(n - hi);
+    st.drag = dl < dh || (dl == dh && n <= lo) ? 1 : 2;   // the nearer end, whichever way round they are
     putParam(g, h, st.drag == 1 ? "low" : "high", n);
     g.invalidate(r);
     return true;
@@ -2758,8 +2798,7 @@ static void keyRangeDrag(Gui& g, const Hit& h, Rect r, int x, int y, bool) {
         putParam(g, h, "shift", note - g.wid(h).json["centre"].num(60));
     } else if (st.drag) {
         int n = keyAt(k, x, k.kb.y + k.kb.h - 1);   // along the white keys, wherever the pointer is
-        if (st.drag == 1) putParam(g, h, "low", std::min(n, (int)paramValue(g, h, "high", 127)));
-        else putParam(g, h, "high", std::max(n, (int)paramValue(g, h, "low", 0)));
+        putParam(g, h, st.drag == 1 ? "low" : "high", n);
     }
     g.invalidate(r);
 }
@@ -2781,8 +2820,9 @@ static void keyRangeDbl(Gui& g, const Hit& h, Rect r, int x, int y) {   // on th
 // Fields: "low", "high" (the range a note's velocity must fall in), "depth" and "offset" (params), colours
 // grid, area, curve, handle and off (over the velocities outside the range). Out is the FS1R's velocity sense,
 // depth * in / 64 + (offset - 64) * 2, clamped to 1..127 (FSVR's src/fs1r/firmware/notes.cpp, note_on, with
-// the system's normal curve). The curve's two ends are handles: the left one drags the range's low end and,
-// up and down, the offset; the right one the high end and the depth.
+// the system's normal curve). The curve's two ends are handles: the low end's drags the range's low end and,
+// up and down, the offset; the high end's the high end and the depth. Either may pass the other: with low
+// above high every velocity sounds but those between the two, as on the FS1R.
 struct VelState : SigState {
     int drag = 0, x0 = 0, y0 = 0;   // 1 the low end, 2 the high end
     double v0 = 0;
@@ -2808,27 +2848,34 @@ static VelGeo velGeo(Gui& g, const Hit& h, Rect r) {
 static void velDraw(Gui& g, Canvas& c, const Hit& h, Rect r) {
     const Widget& w = g.wid(h);
     VelGeo e = velGeo(g, h, r);
-    uint32_t grid = colourField(w, "grid", 0xff5d8a5a), area = colourField(w, "area", 0x4017301f), curve = colourField(w, "curve", 0xff17301f),
-             inside = colourField(w, "handle", 0xff9fd8b0), off = colourField(w, "off", 0x3017301f);
+    uint32_t grid = colourField(g, h, "grid", 0xff5d8a5a), area = colourField(g, h, "area", 0x4017301f), curve = colourField(g, h, "curve", 0xff17301f),
+             inside = colourField(g, h, "handle", 0xff9fd8b0), off = colourField(g, h, "off", 0x3017301f);
     Rect saved = c.clip;
     c.clip = c.clip & r;
     drawPolyline(c, {{e.X(1), e.Y(1)}, {e.X(127), e.Y(127)}}, grid, 1);   // the diagonal: out as in, for reference
-    double lo = std::min(e.lo, e.hi), hi = std::max(e.lo, e.hi);
-    int xl = (int)e.X(lo), xh = (int)e.X(hi);
-    fillRect(c, {r.x, r.y, xl - r.x, r.h}, off);
-    fillRect(c, {xh + 1, r.y, r.x + r.w - xh - 1, r.h}, off);
-    uint32_t area2 = colourField(w, "area2", area);
-    std::vector<std::pair<double, double>> pts;
-    for (int x = xl; x <= xh; ++x) {
-        double v = 1 + (x + 0.5 - e.in.x - 0.5) * 126 / std::max(1, e.in.w - 1), y = e.Y(e.out(v));
-        areaColumn(c, x, (int)y, e.in.y + e.in.h, e.in.y, e.in.y + e.in.h - 1, area, area2);
-        pts.push_back({x + 0.5, y});
+    std::vector<std::pair<int, int>> lit;   // low to high, or with low above high 1 to high and low to 127
+    if (e.lo <= e.hi) lit = {{(int)e.X(e.lo), (int)e.X(e.hi)}};
+    else lit = {{(int)e.X(1), (int)e.X(e.hi)}, {(int)e.X(e.lo), (int)e.X(127)}};
+    int from = r.x;
+    for (auto [xl, xh] : lit) {
+        fillRect(c, {from, r.y, xl - from, r.h}, off);
+        from = xh + 1;
     }
-    drawCurve(g, c, pts, curve, colourField(w, "glow", 0), w.json["width"].num(1));
+    fillRect(c, {from, r.y, r.x + r.w - from, r.h}, off);
+    uint32_t area2 = colourField(g, h, "area2", area);
+    for (auto [xl, xh] : lit) {
+        std::vector<std::pair<double, double>> pts;
+        for (int x = xl; x <= xh; ++x) {
+            double v = 1 + (x + 0.5 - e.in.x - 0.5) * 126 / std::max(1, e.in.w - 1), y = e.Y(e.out(v));
+            areaColumn(c, x, (int)y, e.in.y + e.in.h, e.in.y, e.in.y + e.in.h - 1, area, area2);
+            pts.push_back({x + 0.5, y});
+        }
+        drawCurve(g, c, pts, curve, colourField(g, h, "glow", 0), w.json["width"].num(1));
+    }
     VelState& st = kindState<VelState>(g, h);
     for (int i = 1; i <= 2; ++i) {
         double v = i == 1 ? e.lo : e.hi;
-        handleDot(g, c, e.X(v), e.Y(e.out(v)), inside, colourField(w, "ring", 0), st.drag == i);
+        handleDot(g, c, e.X(v), e.Y(e.out(v)), inside, colourField(g, h, "ring", 0), st.drag == i);
     }
     c.clip = saved;
 }
@@ -2850,10 +2897,10 @@ static void velDrag(Gui& g, const Hit& h, Rect r, int x, int y, bool shift) {
     double v = std::clamp(1 + (x - e.in.x) * 126.0 / std::max(1, e.in.w - 1), 1.0, 127.0);
     double dOut = -(y - st.y0) * 126.0 / std::max(1, e.in.h - 1) * (shift ? 0.1 : 1);   // velocity units, up positive
     if (st.drag == 1) {
-        putParam(g, h, "low", std::min(v, e.hi));
+        putParam(g, h, "low", v);
         putParam(g, h, "offset", st.v0 + dOut / 2);
     } else {
-        putParam(g, h, "high", std::max(v, e.lo));
+        putParam(g, h, "high", v);
         putParam(g, h, "depth", st.v0 + dOut * 64 / std::max(e.hi, 1.0));
     }
     g.invalidate(r);

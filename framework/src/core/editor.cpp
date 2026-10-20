@@ -79,6 +79,7 @@ Gui::Gui(const Skin* skin, State& state, Editor::Host* host, const std::string& 
 }
 
 Gui::~Gui() {   // closed mid-gesture: notes stop, springs return, the host's gesture ends
+    closePopup();
     releasePress();
     end();
 }
@@ -330,14 +331,10 @@ void Gui::relayout() {
     flow(root_);
     if (modalBox_ >= 0 && !modalShown_.empty()) {   // the modal centred over the window, which grows to hold it
         const View* mv = skin_->view(modalShown_);
-        int bw = root_.view->w, bh = root_.view->h, m = skin_->dp(16);
-        if (root_.view->fit) {
-            bw = bh = 1;
-            for (size_t i = 0; i < root_.w.size(); ++i)
-                if ((int)i != modalVeil_ && (int)i != modalBox_ && visible(root_.w[i]))
-                    bw = std::max(bw, root_.w[i].r.x + root_.w[i].r.w), bh = std::max(bh, root_.w[i].r.y + root_.w[i].r.h);
-        }
+        int bw, bh, m = skin_->dp(16);
+        contentSize(bw, bh);
         int mw = mv ? mv->w : 0, mh = mv ? mv->h : 0, W = std::max(bw, mw + 2 * m), H = std::max(bh, mh + 2 * m);
+        if (popup_) W = bw, H = bh;   // in a window of its own: the veil over this one as it is
         root_.w[modalVeil_].r = {0, 0, W, H};
         root_.w[modalBox_].r = {(W - mw) / 2, (H - mh) / 2, mw, mh};
     }
@@ -355,6 +352,15 @@ void Gui::relayout() {
     }
     place(root_, 0, 0, {0, 0, w_, h_});
     invalidateAll();
+}
+
+void Gui::contentSize(int& w, int& h) const {
+    w = root_.view->w, h = root_.view->h;
+    if (!root_.view->fit) return;
+    w = h = 1;
+    for (size_t i = 0; i < root_.w.size(); ++i)
+        if ((int)i != modalVeil_ && (int)i != modalBox_ && visible(root_.w[i]))
+            w = std::max(w, root_.w[i].r.x + root_.w[i].r.w), h = std::max(h, root_.w[i].r.y + root_.w[i].r.h);
 }
 
 int Gui::fullHeight(const Node& n, int i) const {
@@ -780,14 +786,22 @@ const std::vector<uint32_t>& Gui::pixels() {
 
 // Fills and widget artwork go through the skin's surface (skin.json "surface"); text never does.
 void Gui::drawFill(Canvas& c, const Fill& f, Rect r, int tile, bool stretch) {
-    if (f.image >= 0) drawImage(c, skin_->images[f.image], f.tile >= 0 ? f.tile : tile, r, stretch, surf());
+    if (f.image >= 0) drawImage(c, skin_->images[f.image], f.tile >= 0 ? f.tile : tile, r, stretch, surf(), f.tint);
     else if (f.hasColour) fillRect(c, r, f.colour, surf());
 }
 
-void Gui::drawCaption(Canvas& c, const Text& t, const std::string& s, Rect r, const int pad[4], int dx, int dy, bool multiline) {
-    if (s.empty() || t.font < 0) return;
+void Gui::drawCaption(Canvas& c, const Text& t, const std::string& s, Rect r, const int pad[4], int dx, int dy, bool multiline, int font) {
+    if (font < 0) font = t.font;
+    if (s.empty() || font < 0) return;
     Rect tr{r.x + pad[0] + dx, r.y + pad[1] + dy, r.w - pad[0] - pad[2], r.h - pad[1] - pad[3]};
-    drawText(c, skin_->fonts[t.font], s, tr, t.align, t.valign, multiline);
+    drawText(c, skin_->fonts[font], s, tr, t.align, t.valign, multiline);
+}
+
+// A colour a kind reads where it draws: "#rrggbbaa", or "@name" from skin.json's "colours" with the
+// widget's {vars} resolved first, so "@op{op}" follows the operator shown.
+uint32_t Gui::colour(const Node& n, const std::string& s, uint32_t def) const {
+    if (s.size() < 2 || s[0] != '@') return parseColour(s, def);
+    return parseColour(paletteColour(skin_->colours, subst(n, s)), def);
 }
 
 void Gui::paint(Canvas& c, Node& n) {
@@ -843,13 +857,22 @@ int Gui::buttonTile(const Node& n, int i) const {
     bool pressed = w.pressedTiles && live(press_) && press_ == me;
     bool hovered = w.hoverTiles && live(hover_) && hover_ == me;
     int group = pressed ? 1 : hovered ? 1 + w.pressedTiles : 0;
-    int value = w.onIf.op != Cond::None ? test(n, w.onIf, w.onIf.param.empty() ? -1 : state_.indexOf(subst(n, w.onIf.param)))
-              : w.source == Widget::MidiIn || w.source == Widget::Modified ? sourceValue(w) == "1"
-              : w.action.type == Action::Goto || w.action.type == Action::Set ? active(n, i)
-              : w.action.type == Action::Value ? n.w[i].param >= 0 && state_.get(n.w[i].param) == w.action.amount
-              : w.action.type == Action::Scale && w.action.amount > 0 ? std::fabs(w.action.amount - (base_->scales.empty() ? scale_ : zoom_)) < 1e-9
-              : w.action.type == Action::Step ? 0 : index(n, i);
-    return std::clamp(value, 0, states - 1) + states * group;
+    return std::clamp(buttonValue(n, i), 0, states - 1) + states * group;
+}
+
+bool Gui::onIf(const Node& n, int i) const {
+    const Cond& c = n.view->widgets[i].onIf;
+    return c.op != Cond::None && test(n, c, c.param.empty() ? -1 : state_.indexOf(subst(n, c.param)));
+}
+
+int Gui::buttonValue(const Node& n, int i) const {
+    const Widget& w = n.view->widgets[i];
+    return w.onIf.op != Cond::None ? onIf(n, i)
+         : w.source == Widget::MidiIn || w.source == Widget::Modified ? sourceValue(w) == "1"
+         : w.action.type == Action::Goto || w.action.type == Action::Set ? active(n, i)
+         : w.action.type == Action::Value ? n.w[i].param >= 0 && state_.get(n.w[i].param) == w.action.amount
+         : w.action.type == Action::Scale && w.action.amount > 0 ? std::fabs(w.action.amount - (base_->scales.empty() ? scale_ : zoom_)) < 1e-9
+         : w.action.type == Action::Step ? 0 : index(n, i);
 }
 
 // What a "source" shows: CPU load in percent or the voice count as text, MIDI activity or the
@@ -926,14 +949,24 @@ void Gui::paintWidget(Canvas& c, Node& n, int i, Rect r) {
     static const int noPad[4] = {0, 0, 0, 0};
     if (s.param >= 0) s.drawn = state_.get(s.param);
     if (s.param2 >= 0) s.drawn2 = state_.get(s.param2);
+    Fill own;   // a tint naming a {var}, or a number's {value} (the text it shows), is resolved here: "@op{value}"
+    if (!w.fill.tintRef.empty()) {
+        own = w.fill;
+        std::string t = own.tintRef;
+        if (size_t at = t.find("{value}"); at != std::string::npos && w.kind == Kind::Number) t.replace(at, 7, numberText(n, i));
+        own.tint = colour(n, t, 0);
+    }
+    const Fill& fill = w.fill.tintRef.empty() ? w.fill : own;
     switch (w.kind) {
-    case Kind::Plate:
-        drawFill(c, w.fill, r, w.source == Widget::MidiIn || w.source == Widget::Modified ? sourceValue(w) == "1" : 0);
-        drawCaption(c, w.text, withData(n, shownText(n, i)), r, w.pad, 0, 0, true);
+    case Kind::Plate: {   // with an onIf: tile 1 and the text's onFont while it holds
+        bool on = onIf(n, i);
+        drawFill(c, fill, r, on || ((w.source == Widget::MidiIn || w.source == Widget::Modified) && sourceValue(w) == "1"));
+        drawCaption(c, w.text, withData(n, shownText(n, i)), r, w.pad, 0, 0, true, on ? w.text.onFont : -1);
         break;
+    }
     case Kind::Button:
     case Kind::Dropdown: {
-        drawFill(c, w.fill, r, buttonTile(n, i));
+        drawFill(c, fill, r, buttonTile(n, i));
         bool pressed = w.pressedTiles && live(press_) && press_ == Hit{&n, i};   // offset only with pressed tiles
         std::string caption = w.source == Widget::Cpu || w.source == Widget::Voices || w.source == Widget::Scale ? sourceValue(w) : s.text;
         if (w.captionFromItem) {
@@ -949,12 +982,14 @@ void Gui::paintWidget(Canvas& c, Node& n, int i, Rect r) {
             };
             find(w.itemsData.empty() ? w.items : itemsOf(n, i));
         }
-        drawCaption(c, w.text, withData(n, caption), r, w.pad, pressed ? w.pressOffset[0] : 0, pressed ? w.pressOffset[1] : 0, true);
+        bool lit = w.text.onFont >= 0 && buttonValue(n, i) > 0;   // a lit button's text in its onFont
+        drawCaption(c, w.text, withData(n, caption), r, w.pad, pressed ? w.pressOffset[0] : 0, pressed ? w.pressOffset[1] : 0, true,
+                    lit ? w.text.onFont : -1);
         break;
     }
     case Kind::Dial:
     case Kind::Meter:
-        if (w.kind == Kind::Dial) drawFill(c, w.fill, r, 0);
+        if (w.kind == Kind::Dial) drawFill(c, fill, r, 0);
         if (w.image >= 0 && w.slider && w.kind == Kind::Dial) {   // slider: tile 0 moved along the axis
             const Image& img = skin_->images[w.image];
             Rect t = img.tile(0);
@@ -971,7 +1006,7 @@ void Gui::paintWidget(Canvas& c, Node& n, int i, Rect r) {
         }
         break;
     case Kind::Number: {
-        drawFill(c, w.fill, r, 0);
+        drawFill(c, fill, r, 0);
         int pad[4] = {w.pad[0], w.pad[1], w.pad[2], w.pad[3]};
         if (const Skin::Stepper* st = stepperOf(n, i)) {   // down at the left end, up at the right, lit while held
             bool held = live(press_) && press_ == Hit{&n, i} && stepDir_ != 0;
@@ -991,12 +1026,15 @@ void Gui::paintWidget(Canvas& c, Node& n, int i, Rect r) {
         break;
     }
     case Kind::Textbox:
-        drawFill(c, w.fill, r, 0);
+        drawFill(c, fill, r, 0);
         if (editing(n, i)) paintEdit(c);
         else drawCaption(c, w.text, shownText(n, i), r, w.pad, 0, 0, w.multiline);
         break;
     case Kind::Plot: {   // the processor's scope values across the width, or zero data (a trace on the bottom row, no bars)
-        drawFill(c, w.fill, r, 0);
+        drawFill(c, fill, r, 0);
+        // the colours read here, where a palette name's {vars} have values ("@op{op}" follows the var)
+        const uint32_t line = colour(n, w.json["line"].str(), w.line), line2 = colour(n, w.json["line2"].str(), w.line2),
+                       glow = colour(n, w.json["glow"].str(), 0);
         std::vector<int> col((size_t)std::max(r.w, 0), 0);
         float vals[256];
         int n = w.source == Widget::Scope ? std::min(state_.scope(vals, 256), 256) : 0;
@@ -1016,8 +1054,8 @@ void Gui::paintWidget(Canvas& c, Node& n, int i, Rect r) {
             double lw = std::max(1.0, w.json["width"].num(1) * skin_->density), inner = r.h - lw;
             for (int k = 0; k < n; ++k)
                 pts.push_back({r.x + 0.5 + (r.w - 1) * double(k) / (n - 1), r.y + lw / 2 + inner * (1 - std::clamp((double)vals[k], 0.0, 1.0))});
-            if (uint32_t glow = parseColour(w.json["glow"].str(), 0); glow >> 24) drawPolyline(c, pts, glow, 4 * lw);
-            drawPolyline(c, pts, w.line, lw);
+            if (glow >> 24) drawPolyline(c, pts, glow, 4 * lw);
+            drawPolyline(c, pts, line, lw);
             break;
         }
         if (n > 0 && w.drawMode == 0) {   // a trace: each column reads the value under it
@@ -1030,11 +1068,11 @@ void Gui::paintWidget(Canvas& c, Node& n, int i, Rect r) {
                     if (x + b >= 0 && x + b < r.w) col[(size_t)(x + b)] = height(vals[k]);
             }
         }
-        drawScope(c, r, col, w.drawMode, w.line, w.line2, skin_->lw());
+        drawScope(c, r, col, w.drawMode, line, line2, skin_->lw());
         break;
     }
     case Kind::List:
-        drawFill(c, w.fill, r, 0);
+        drawFill(c, fill, r, 0);
         if (w.rowHeight > 0 && (!w.columns.empty() || w.source != Widget::NoSource || !w.rows.empty())) paintList(c, n, i, r);
         else drawCaption(c, w.header, w.header.text, {r.x, r.y, r.w, w.rowHeight > 0 ? w.rowHeight : r.h}, noPad, 0, 0, false);
         break;
@@ -1043,12 +1081,12 @@ void Gui::paintWidget(Canvas& c, Node& n, int i, Rect r) {
         paintScrollbar(c, n, i);
         break;
     case Kind::Custom:
-        drawFill(c, w.fill, r, 0);
+        drawFill(c, fill, r, 0);
         if (w.ops && w.ops->draw) w.ops->draw(*this, c, Hit{&n, i, gen_}, r);
         break;
     case Kind::Veil:
     case Kind::Tree:
-        drawFill(c, w.fill, r, 0);
+        drawFill(c, fill, r, 0);
         break;
     }
 }
@@ -2032,15 +2070,18 @@ bool Gui::keyDown(Key k, bool shift, bool ctrl, bool alt, unsigned ch, bool from
         return true;
     }
     if (!editing_on_) {
-        if (!live(listFocus_)) {
-            // Nothing in the editor owns the keyboard, so the skin's shortcuts get the key; a modal keeps
-            // them to itself, since its own controls are what the keyboard is for while it is up.
-            if (modalShown_.empty()) return runKey(k, ch, shift, ctrl, alt, fromHost);
-            if (k == KeyEscape) setModal("");   // Escape closes a modal, as its Cancel would
+        // A list with a selected row keeps the named keys, the ones that act on a selection, though only
+        // Escape (which lets go) and a MIDI map's Delete do anything yet. A key that types is no use to it and
+        // goes on as if no list had the keyboard, so Space still reaches the host's transport.
+        if (live(listFocus_) && k != KeyNone) {
+            if (k == KeyEscape) listFocus_ = {};
+            else if (k == KeyDelete && wid(listFocus_).source == Widget::MidiMap) listAction(listFocus_, Action{Action::MidiMap, "remove"});
             return true;
         }
-        if (k == KeyEscape) listFocus_ = {};
-        else if (k == KeyDelete && wid(listFocus_).source == Widget::MidiMap) listAction(listFocus_, Action{Action::MidiMap, "remove"});
+        // The skin's shortcuts get the key; a modal keeps them to itself, since its own controls are what the
+        // keyboard is for while it is up.
+        if (modalShown_.empty() && !isPopup_) return runKey(k, ch, shift, ctrl, alt, fromHost);
+        if (k == KeyEscape) dismiss();   // Escape closes a modal, as its Cancel would
         return true;
     }
     Edit& e = edit_;
@@ -2724,6 +2765,10 @@ void Gui::checkValues(Node& n) {
             s.stored = state_.hasData(s.key);
             s.data = state_.data(s.key);
         }
+        if (w.onIf.op != Cond::None && onIf(n, (int)i) != (s.lit == 1)) {   // a lit state that turned with another param
+            s.lit = onIf(n, (int)i);
+            changed = true;
+        }
         if (s.text.find("{data:") != std::string::npos) {   // a caption follows the text data it names
             std::string t = withData(n, s.text);
             if (t != s.caption) { s.caption = t; changed = true; }
@@ -2770,7 +2815,7 @@ void Gui::tick() {
         nextRepeat_ = now + ms(100);
         stepNumber(press_, stepDir_);
     }
-    if (state_.ui() != savedUi_) {   // the host loaded a state
+    if (!isPopup_ && state_.ui() != savedUi_) {   // the host loaded a state
         loaded = true;
         applyUi(state_.ui());
         kindsLoaded(*this);
@@ -2793,7 +2838,7 @@ void Gui::tick() {
         unlight(root_);   // by the tree, since a modal's show may have left a Hit on the list dead
         contextLit_ = false;
     }
-    if (standalone() && window && state_.data(kCloseKey) == "1") {
+    if (!isPopup_ && standalone() && window && state_.data(kCloseKey) == "1") {
         state_.setData(kCloseKey, "");
         closing_ = true;
         platformCloseApp(window);
@@ -2918,6 +2963,7 @@ std::string Gui::uiJson() const {
 }
 
 void Gui::saveUi() {
+    if (isPopup_) return;   // a modal's window: the session's GUI state is the editor's
     savedUi_ = uiJson();
     state_.setUi(savedUi_);
 }
@@ -2973,10 +3019,14 @@ void Gui::setModal(const std::string& view) {
     syncModal();
 }
 
+void Gui::dismiss() { setModal(""); }
+
 // The modal shows the view the text data under kModalKey names: over the window behind a veil, with
-// the keyboard (Escape closes it). An action or the processor sets the key; "" closes it.
+// the keyboard (Escape closes it). An action or the processor sets the key; "" closes it. A modal the
+// window cannot hold (a fitted window shrunk to a bar) goes into a window of its own, where the platform
+// has one, rather than growing this one around it: this one keeps its size under the veil.
 void Gui::syncModal() {
-    if (modalBox_ < 0) return;
+    if (modalBox_ < 0 || isPopup_) return;
     std::string v = state_.data(kModalKey);
     if (!skin_->view(v)) v.clear();
     if (v == modalShown_) return;
@@ -2984,11 +3034,44 @@ void Gui::syncModal() {
     finishEdit(false);
     listFocus_ = {};
     hover_ = {};
+    closePopup();
     modalShown_ = v;
-    root_.w[modalVeil_].hidden = root_.w[modalBox_].hidden = v.empty();
-    if (!v.empty()) show(root_, modalBox_, v, {});
+    bool popped = false;
+    if (!v.empty() && window) {
+        const View* mv = skin_->view(v);
+        int bw, bh, m = skin_->dp(16);
+        contentSize(bw, bh);
+        popped = (mv->w + 2 * m > bw || mv->h + 2 * m > bh) && openPopup(v);
+    }
+    root_.w[modalVeil_].hidden = v.empty();
+    root_.w[modalBox_].hidden = v.empty() || popped;
+    if (!v.empty() && !popped) show(root_, modalBox_, v, {});
     else relayout();
-    if (window) platformFocus(window, !v.empty());
+    if (window) platformFocus(window, !v.empty() && !popped);
+}
+
+// A Gui of the modal's view in a window of its own, drawn with this one's skin at this one's scale and vars.
+bool Gui::openPopup(const std::string& view) {
+    popup_ = std::make_unique<Gui>(base_, state_, host_, view);
+    Gui& p = *popup_;
+    p.isPopup_ = true;
+    p.zoomed_ = zoomed_;
+    p.zoom_ = zoom_;
+    p.scale_ = scale_;
+    p.skin_ = skin_;
+    std::string ui = "{\"vars\":{";
+    for (size_t i = 0; i < vars_.size(); ++i) ui += (i ? "," : "") + jsonQuote(vars_[i].first) + ":" + jsonQuote(vars_[i].second);
+    p.applyUi(ui + "}}", false);
+    popupWin_ = p.window = platformPopup(window, &p);
+    if (!popupWin_) popup_.reset();
+    return popupWin_ != nullptr;
+}
+
+void Gui::closePopup() {
+    if (popupWin_) platformClose(popupWin_);   // the window first, then the GUI it drew
+    if (popup_) popup_->window = nullptr;
+    popupWin_ = nullptr;
+    popup_.reset();
 }
 
 // The standalone's window is closing: with a "close" modal and its condition holding, that modal opens
@@ -3037,7 +3120,7 @@ bool Gui::settingsShown(const Node& n) const {
 // While the settings view shows: it is read when it comes into sight, a choice made there goes to the
 // app's settings window, and everything is read back, since a new API or device changes what the others offer.
 void Gui::syncDevices() {
-    const bool shown = window && !skin_->settingsView.empty() && settingsShown(root_);
+    const bool shown = window && !skin_->settingsView.empty() && (settingsShown(root_) || (isPopup_ && rootName_ == skin_->settingsView));
     if (shown != devicesShown_) {
         devicesShown_ = shown;
         if (shown) readDevices();
@@ -3056,6 +3139,7 @@ void Gui::syncDevices() {
 
 // A new skin at 1x (live reload); a GUI at another scale loads it again at that scale.
 void Gui::setSkin(const Skin* skin) {
+    closePopup();   // it draws with the skin going
     std::string ui = uiJson(), err;
     int w = w_, h = h_;
     auto old = std::move(zoomed_);   // the tree still points into it until applyUi rebuilds
@@ -3103,6 +3187,7 @@ void Editor::detach() {
     if (!impl_->gui.window) return;
     platformHold(impl_->gui.window, true);
     impl_->gui.focusLost();   // commits text entry and closes menus while the window still exists
+    impl_->gui.closePopup();
     platformHold(impl_->gui.window, false);
     platformClose(impl_->gui.window);
     impl_->gui.window = nullptr;

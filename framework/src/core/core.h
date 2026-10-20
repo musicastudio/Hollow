@@ -41,6 +41,9 @@ std::string formatNumber(const char* fmt, double v);               // printf, al
 bool safeFormat(const std::string& fmt);                           // one conversion, for a double
 std::string formatInt(const std::string& fmt, int v);              // one %d/%i conversion, else plain digits
 uint32_t parseColour(const std::string& s, uint32_t def);          // "#rrggbb" or "#rrggbbaa" to 0xAARRGGBB
+// "@name" or "@name/aa" from a skin's "colours" (aa: two hex digits, the alpha in place of the colour's own) as
+// "#rrggbbaa"; "" when the palette has no such name
+std::string paletteColour(const std::map<std::string, std::string>& palette, const std::string& ref);
 // A value as the skin shows it: the label, else format (or the param's), else %.0f / %.2f. No unit.
 std::string displayText(const ParamDef& d, double plain, const std::string& format);
 
@@ -62,6 +65,7 @@ struct Image {
     bool sliced = false;
     int slice[4] = {0, 0, 0, 0}; // top, right, bottom, left
     bool surface = true;         // skin.json "surface": false keeps the skin's surface off this image
+    int lightness = 128;         // tile 0's mean lightness (opaque pixels): what a fill's "tint" maps to its colour
     std::vector<int8_t> slope;   // with a reflecting surface: the slope of its shading, x and y per pixel (-127..127)
     Rect tile(int i) const;
 };
@@ -101,10 +105,13 @@ struct Fill {
     int image = -1, tile = -1;   // image index in Skin::images; tile -1 = chosen by the widget
     bool hasColour = false;
     uint32_t colour = 0;
+    uint32_t tint = 0;           // "tint": the colour the image's tile 0 takes at its mean lightness; 0 none
+    std::string tintRef;         // a tint naming a {var} or {value}, resolved where it is drawn
 };
 struct Text {
     std::string text;
     int font = -1;               // index in Skin::fonts
+    int onFont = -1;             // "onFont": the font while a button draws lit (a plate: while its onIf holds)
     int align = 0, valign = 0;   // 0 left/top, 1 center/middle, 2 right/bottom
 };
 struct Action {
@@ -204,7 +211,7 @@ struct Widget {
     int layer = 3;
     bool hidden = false, disabled = false;
     Cond showIf, enableIf;
-    Cond onIf;                   // button: drawn lit while this holds, instead of by its action
+    Cond onIf;                   // button: drawn lit while this holds, instead of by its action; plate: tile 1 while it holds
     bool stepper = true;         // number: false keeps the skin's "steppers" off this box
     double value = 0;
     Fill fill;
@@ -324,6 +331,7 @@ public:
     uint32_t learnOutline = 0xff000099;
     std::vector<std::pair<int, std::string>> learnDefaults;   // CC and param id of a fresh instance
     std::map<std::string, Json> tables;            // data/<name>.json
+    std::map<std::string, std::string> colours;    // skin.json "colours": the palette a view's "@name" colours name
     uint32_t modalVeil = 0x80000000;               // skin.json "modal": the veil over the window behind a modal
     std::string closeModal;                        // skin.json "close": the standalone's close asks this modal
     Cond closeIf;                                  // first, while this holds
@@ -354,7 +362,7 @@ struct Canvas {
 // With a surface (skin artwork and fills; never text or drawings), light grey pixels take its texture.
 void fillRect(Canvas& c, Rect r, uint32_t argb, const Surface* surface = nullptr);
 // Unsliced images draw 1:1 at dst's top-left, or scaled to dst with stretch.
-void drawImage(Canvas& c, const Image& img, int tile, Rect dst, bool stretch = false, const Surface* surface = nullptr);
+void drawImage(Canvas& c, const Image& img, int tile, Rect dst, bool stretch = false, const Surface* surface = nullptr, uint32_t tint = 0);
 // The surface burnt into an image drawn with its top-left at window point (x, y) >= 0, every tile at
 // that place: the pixels the runtime shows there, now in the artwork (tools/bake.cpp).
 void bakeSurface(Image& img, int x, int y, const Surface& sf);
@@ -382,6 +390,10 @@ struct MenuEntry {
     std::vector<MenuEntry> items; // a submenu
 };
 PlatformWindow* platformOpen(void* parent, Gui* gui);
+// A window of its own for a modal the editor's window cannot hold: top-level, owned by owner's window and
+// centred over it, holding gui (its view's size); platformClose closes it. Null where the platform has none,
+// and the editor grows around the modal instead.
+PlatformWindow* platformPopup(PlatformWindow* owner, Gui* gui);
 void platformClose(PlatformWindow* w);
 // Editor holds the GUI while it calls into it from the host's thread; only Linux runs the GUI on a
 // thread of its own, so elsewhere this does nothing.
@@ -441,6 +453,7 @@ struct Inst {                    // one widget of one shown view
     int sent = -1;                // dials with midi: the last value sent or received
     int row = -1;                 // lists: the selected row
     int revealed = -2;            // bound lists: the selected row when it was last scrolled into view
+    int lit = -1;                 // widgets with onIf: whether it held at the last look, to repaint when it turns
     int context = -1;             // lists: the row a right-click is for, lit while its menu or modal is open
     std::string caption;          // a caption's "{data:}" text at the last look, to repaint when it changes
     std::string text;             // text.text with {vars} resolved
@@ -522,6 +535,8 @@ public:
     bool live(const Hit& h) const { return h.node && h.gen == gen_; }
     bool standalone() const { return kAudioSettings && host_ && host_->standalone(); }   // the app's settings are ours to open
     bool closeRequested();                       // the standalone's window is closing: false when a modal asks first
+    void dismiss();                              // closes the modal, as Escape would: a popup's window closing
+    void closePopup();                           // a modal's own window goes (the editor's window is closing)
     // For tests that drive the GUI without a window (tools/check_gui.cpp).
     bool widgetRect(const std::string& path, Rect& r);   // a visible widget's rect, by embed path and name
     std::string tipOf(const std::string& path);           // the tooltip it would show, its shortcut included
@@ -531,6 +546,7 @@ public:
     struct Probe { std::string path; const Widget* w; Rect r; int param; };
     std::vector<Probe> probes();                          // every visible, enabled widget, embeds' contents too
     std::string subst(const Node& n, const std::string& s) const;   // {var} and {var:upper}
+    uint32_t colour(const Node& n, const std::string& s, uint32_t def) const;   // "#..." or "@name" (palette, {vars})
     int paramOf(const Hit& h, const std::string& id) const;         // a param id with {vars}, -1 if unknown
     double plain(const Node& n, int i, int which = 0) const;        // bound widgets read State, others their local value
     double norm(const Node& n, int i, int which = 0) const;
@@ -624,6 +640,11 @@ private:
     bool contextLit_ = false;                    // a list row lit by a right-click (Inst::context)
     int modalVeil_ = -1, modalBox_ = -1;         // the root's veil and embed for a modal (skin.cpp adds them)
     std::string modalShown_;                     // the view it shows, "" when closed
+    // A modal the window cannot hold shows in a window of its own (platformPopup) where the platform has one:
+    // a Gui of the modal's view, sharing this one's skin, which never writes the session's GUI state.
+    std::unique_ptr<Gui> popup_;
+    PlatformWindow* popupWin_ = nullptr;
+    bool isPopup_ = false;                       // this Gui is such a window's
     bool closing_ = false;                       // the standalone closes without asking
     double deviceSent_[6] = {-1, -1, -1, -1, -1, -1};   // the settings view: each device param as last read
     bool devicesShown_ = false;                          // the settings view was in sight at the last tick
@@ -659,7 +680,7 @@ private:
     void drawFill(Canvas& c, const Fill& f, Rect r, int tile, bool stretch = false);
     bool surfOn_ = true;         // the widget being painted lets the skin's surface on
     const Surface* surf() const { return surfOn_ && skin_->surface.tex ? &skin_->surface : nullptr; }
-    void drawCaption(Canvas& c, const Text& t, const std::string& s, Rect r, const int pad[4], int dx, int dy, bool multiline);
+    void drawCaption(Canvas& c, const Text& t, const std::string& s, Rect r, const int pad[4], int dx, int dy, bool multiline, int font = -1);
     std::string shownText(Node& n, int i);       // plates and textboxes: status, source, data or text
     std::string sourceValue(const Widget& w) const;
     std::string numberText(const Node& n, int i) const;
@@ -681,6 +702,8 @@ private:
     bool active(const Node& n, int i) const;     // goto/set buttons light up by themselves
     bool activeAction(const Action& a) const;
     int buttonTile(const Node& n, int i) const;
+    int buttonValue(const Node& n, int i) const;   // the value a button's tile shows, before its group
+    bool onIf(const Node& n, int i) const;         // the widget has an onIf and it holds
     void act(const Hit& h);
     void flip(const Hit& h);
     Node* findEmbed(Node& n, const std::string& name, int* index);
@@ -734,6 +757,8 @@ private:
     void writeScroll(const Node& n, std::string& out) const;
     void saveUi();
     void syncModal();                            // shows the view the modal key names, or closes it
+    void contentSize(int& w, int& h) const;      // the window's visible widgets' extent, the modal's left out
+    bool openPopup(const std::string& view);
     void setModal(const std::string& view);
     void standaloneVar();
     bool readDevices();

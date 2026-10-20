@@ -61,6 +61,16 @@ static inline uint32_t surfaced(const Surface* sf, uint32_t s, int x, int y, con
     return (s & 0xff000000u) | r << 16 | g << 8 | b;
 }
 
+// A fill's "tint": each channel times the tint's over the art's lightness (Image::lightness), so a grey
+// tile 0 takes the tint's colour where it is as light as on average, lighter and darker where the art is
+// (and its other tiles in proportion). Alpha is the art's.
+static inline uint32_t tinted(uint32_t s, uint32_t t, int lightness) {
+    if (!t) return s;
+    uint32_t o = s & 0xff000000u;
+    for (int sh = 0; sh < 24; sh += 8) o |= std::min(255u, (s >> sh & 255) * (t >> sh & 255) / (uint32_t)lightness) << sh;
+    return o;
+}
+
 void fillRect(Canvas& c, Rect r, uint32_t argb, const Surface* sf) {
     r = r & c.clip;
     for (int y = r.y; y < r.y + r.h; ++y) {
@@ -75,7 +85,7 @@ static inline const int8_t* slopeAt(const Image& img, int x, int y) {
 }
 
 // Copies src (a rect of img) scaled to dst (nearest neighbour), clipped to clip.
-static void blit(Canvas& c, const Image& img, Rect src, Rect dst, Rect clip, const Surface* sf = nullptr) {
+static void blit(Canvas& c, const Image& img, Rect src, Rect dst, Rect clip, const Surface* sf = nullptr, uint32_t tint = 0) {
     if (src.empty() || dst.empty()) return;
     Rect r = dst & clip;
     for (int y = r.y; y < r.y + r.h; ++y) {
@@ -84,14 +94,15 @@ static void blit(Canvas& c, const Image& img, Rect src, Rect dst, Rect clip, con
         uint32_t* drow = c.px + (size_t)y * c.w;
         for (int x = r.x; x < r.x + r.w; ++x) {
             int sx = src.w == dst.w ? src.x + (x - dst.x) : src.x + (int)((2LL * (x - dst.x) + 1) * src.w / (2LL * dst.w));
-            blend<255>(drow[x], sf ? surfaced(sf, srow[sx], x, y, slopeAt(img, sx, sy)) : srow[sx]);
+            uint32_t s = tinted(srow[sx], tint, img.lightness);
+            blend<255>(drow[x], sf ? surfaced(sf, s, x, y, slopeAt(img, sx, sy)) : s);
         }
     }
 }
 
 // Fills dst with src repeated from dst's top-left, clipped to clip: the edges and
 // the centre of a nine-slice image are drawn this way (corners come out 1:1 since their sizes match).
-static void repeat(Canvas& c, const Image& img, Rect src, Rect dst, Rect clip, const Surface* sf) {
+static void repeat(Canvas& c, const Image& img, Rect src, Rect dst, Rect clip, const Surface* sf, uint32_t tint) {
     if (src.empty() || dst.empty()) return;
     Rect r = dst & clip;
     for (int y = r.y; y < r.y + r.h; ++y) {
@@ -100,20 +111,21 @@ static void repeat(Canvas& c, const Image& img, Rect src, Rect dst, Rect clip, c
         uint32_t* drow = c.px + (size_t)y * c.w;
         for (int x = r.x; x < r.x + r.w; ++x) {
             int sx = (x - dst.x) % src.w;
-            blend<255>(drow[x], sf ? surfaced(sf, srow[sx], x, y, slopeAt(img, src.x + sx, sy)) : srow[sx]);
+            uint32_t s = tinted(srow[sx], tint, img.lightness);
+            blend<255>(drow[x], sf ? surfaced(sf, s, x, y, slopeAt(img, src.x + sx, sy)) : s);
         }
     }
 }
 
 // "passes": art composited more than once (the same pixels blended again).
-void drawImage(Canvas& c, const Image& img, int tile, Rect dst, bool stretch, const Surface* surface) {
+void drawImage(Canvas& c, const Image& img, int tile, Rect dst, bool stretch, const Surface* surface, uint32_t tint) {
     if (img.px.empty()) return;
     const Surface* sf = surface && surface->tex && img.surface ? surface : nullptr;
     Rect t = img.tile(tile);
     Rect clip = c.clip & dst;
     for (int pass = 0; pass < std::max(img.passes, 1); ++pass) {
     if (!img.sliced || (t.w == dst.w && t.h == dst.h)) {
-        blit(c, img, t, stretch ? dst : Rect{dst.x, dst.y, t.w, t.h}, clip, sf);
+        blit(c, img, t, stretch ? dst : Rect{dst.x, dst.y, t.w, t.h}, clip, sf, tint);
         continue;
     }
     int top = std::min(img.slice[0], t.h), right = std::min(img.slice[1], t.w);
@@ -123,7 +135,7 @@ void drawImage(Canvas& c, const Image& img, int tile, Rect dst, bool stretch, co
     for (int j = 0; j < 3; ++j)
         for (int i = 0; i < 3; ++i)
             repeat(c, img, {t.x + sx[i], t.y + sy[j], sx[i + 1] - sx[i], sy[j + 1] - sy[j]},
-                   {dst.x + dx[i], dst.y + dy[j], dx[i + 1] - dx[i], dy[j + 1] - dy[j]}, clip, sf);
+                   {dst.x + dx[i], dst.y + dy[j], dx[i + 1] - dx[i], dy[j + 1] - dy[j]}, clip, sf, tint);
     }
 }
 

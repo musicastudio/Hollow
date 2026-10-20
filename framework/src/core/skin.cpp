@@ -225,6 +225,16 @@ uint32_t parseColour(const std::string& s, uint32_t def) {
     return s.size() == 7 ? 0xff000000u | v : (v >> 8) | (v & 0xff) << 24;
 }
 
+std::string paletteColour(const std::map<std::string, std::string>& palette, const std::string& ref) {
+    if (ref.size() < 2 || ref[0] != '@') return "";
+    const size_t slash = ref.find('/');
+    auto c = palette.find(ref.substr(1, slash == std::string::npos ? std::string::npos : slash - 1));
+    if (c == palette.end() || (c->second.size() != 7 && c->second.size() != 9) || c->second[0] != '#') return "";
+    std::string s = c->second.size() == 9 ? c->second : c->second + "ff";
+    if (slash != std::string::npos && ref.size() == slash + 3) s.replace(7, 2, ref.substr(slash + 1));
+    return s;
+}
+
 // printf of one int: the format must have exactly one d or i conversion (and any %%).
 std::string formatInt(const std::string& f, int v) {
     int convs = 0;
@@ -462,6 +472,15 @@ struct Loader {
                 for (int i = 0; i < 4; ++i) img.slice[i] = std::max(0, px(m["slice"][i].integer()));
             }
             if (scale != 1 && !rendered) img = resampled(img, scale);
+            Rect t = img.tile(0);   // its mean lightness, where a "tint" puts its colour
+            uint64_t sum = 0, n = 0;
+            for (int y = t.y; y < t.y + t.h; ++y)
+                for (int x = t.x; x < t.x + t.w; ++x)
+                    if (uint32_t p = img.px[(size_t)y * img.w + (size_t)x]; p >> 24 >= 128) {
+                        sum += (77 * (p >> 16 & 255) + 150 * (p >> 8 & 255) + 29 * (p & 255)) >> 8;
+                        ++n;
+                    }
+            if (n && sum) img.lightness = (int)(sum / n);
             id = (int)skin.images.size();
             skin.images.push_back(std::move(img));
             skin.imageNames.push_back(name);
@@ -605,6 +624,8 @@ struct Loader {
     Fill fill(const Json& j) {
         Fill f;
         if (j.has("colour")) { f.hasColour = true; f.colour = colour(j["colour"].str(), 0); }
+        f.tint = colour(j["tint"].str(), 0);
+        if (j["tint"].str().find('{') != std::string::npos) f.tintRef = j["tint"].str();
         f.image = image(j["image"].str());
         f.tile = j["tile"].integer(-1);
         return f;
@@ -614,6 +635,7 @@ struct Loader {
         Text t;
         t.text = j["text"].str();
         t.font = font(j["font"].str());
+        if (j.has("onFont")) t.onFont = font(j["onFont"].str());
         std::string a = j["align"].str(), v = j["valign"].str();
         t.align = a == "center" ? 1 : a == "right" ? 2 : 0;
         t.valign = v == "middle" ? 1 : v == "bottom" ? 2 : 0;
@@ -903,7 +925,7 @@ struct Loader {
                 }
             for (const char* f : {"image", "image2", "track", "thumb"}) image(j[f].str());
         }
-        if (w.kind == Kind::List) w.json = j;   // a chooser list's "values", "first" and "set"
+        if (w.kind == Kind::List || w.kind == Kind::Plot) w.json = j;   // a chooser list's "values", "first" and "set"; a plot's width, glow and colours
         return w;
     }
 
@@ -936,6 +958,15 @@ struct Loader {
     }
 };
 
+// skin.json "colours" is a palette: a string "@name" (or "@name/aa") anywhere in a view is that colour. One
+// holding a {var} ("@op{op}") is looked up where it is drawn, once the var has a value (Gui::colour).
+static void paletteColours(Json& j, const std::map<std::string, std::string>& palette) {
+    if (j.type == Json::String && j.s.find('{') == std::string::npos)
+        if (std::string c = paletteColour(palette, j.s); !c.empty()) j.s = c;
+    for (auto& i : j.items) paletteColours(i, palette);
+    for (auto& m : j.members) paletteColours(m.second, palette);
+}
+
 std::shared_ptr<Skin> loadFiles(std::shared_ptr<const Files> all, std::string* error, double scale = 1) {
     const Files& files = *all;
     auto skin = std::make_shared<Skin>();
@@ -957,6 +988,7 @@ std::shared_ptr<Skin> loadFiles(std::shared_ptr<const Files> all, std::string* e
     for (auto& s : sj["scales"].items)
         if (s.num() > 0) skin->scales.push_back(s.num());
     skin->vars = Loader::vars(sj["vars"]);
+    for (auto& c : sj["colours"].members) skin->colours[c.first] = c.second.str();
     if (files.count("params.json") && !get("params.json", pj)) return nullptr;
     for (auto& p : pj.items) {
         ParamDef d;
@@ -1021,6 +1053,7 @@ std::shared_ptr<Skin> loadFiles(std::shared_ptr<const Files> all, std::string* e
         if (path.find('/', 6) != std::string::npos) continue;
         Json vj;
         if (!get(path, vj)) return nullptr;
+        paletteColours(vj, skin->colours);
         View v;
         v.name = path.substr(6, path.size() - 11);
         v.w = ld.px(vj["size"][0].num());
