@@ -1367,11 +1367,10 @@ void Gui::runAction(Node& n, int i, const Action& action) {
         if (a.target == "close") {
             closing_ = true;
             platformCloseApp(window);
-        } else if (!skin_->settingsView.empty() && readDevices()) {
-            if (!settingsShown(root_)) setModal(skin_->settingsView);
-            else { platformDriverPanel(window); invalidateAll(); }   // already in sight: the driver's own panel, and read again
+        } else if (!skin_->settingsView.empty() && !settingsShown(root_) && readDevices()) {
+            setModal(skin_->settingsView);
         } else {
-            platformAudioSettings(window);
+            host_->showDevices();   // the app's own window, with the ASIO driver's panel: the skin's view is in sight or there is none
         }
         return;
     case Action::Modal:   // text data first (what the modal is for), then the view, or "" to close it
@@ -3084,13 +3083,14 @@ bool Gui::closeRequested() {
     return false;
 }
 
-// The settings modal's lists and params from the app's settings window: each list's items as lines of
-// text data "standalone.<list>.items", its choice in the param "standalone.<list>"; the MIDI inputs' lines
-// carry a second field, "1" for an open input and "0" for a closed one, and a pick of one (the param at
-// 1 + its row) flips it.
+// The settings modal's lists and params from the app's audio and MIDI setup (Editor::Host::devices): each
+// list's items as lines of text data "standalone.<list>.items", its choice in the param "standalone.<list>";
+// the MIDI inputs' lines carry a second field, "1" for an open input and "0" for a closed one, and a pick of
+// one (the param at 1 + its row) flips it.
 bool Gui::readDevices() {
+    devicesRead_ = std::chrono::steady_clock::now();
     std::vector<DeviceList> lists;
-    if (!window || !platformDevices(window, lists) || lists.size() < 6) return false;
+    if (!window || !host_ || !host_->devices(lists) || lists.size() < 6) return false;
     for (int k = 0; k < 6; ++k) {
         const DeviceList& l = lists[(size_t)k];
         std::string items;
@@ -3118,7 +3118,7 @@ bool Gui::settingsShown(const Node& n) const {
 }
 
 // While the settings view shows: it is read when it comes into sight, a choice made there goes to the
-// app's settings window, and everything is read back, since a new API or device changes what the others offer.
+// app's setup, and everything is read back, since a new API or device changes what the others offer.
 void Gui::syncDevices() {
     const bool shown = window && !skin_->settingsView.empty() && (settingsShown(root_) || (isPopup_ && rootName_ == skin_->settingsView));
     if (shown != devicesShown_) {
@@ -3131,10 +3131,12 @@ void Gui::syncDevices() {
         int p = state_.indexOf(std::string("standalone.") + kDevices[k]);
         if (p < 0 || state_.get((size_t)p) == deviceSent_[k]) continue;
         int item = (int)std::lround(state_.get((size_t)p)) - (k == 5 ? 1 : 0);
-        if (item >= 0) platformSetDevice(window, k, item);
+        if (item >= 0) host_->setDevice(k, item);
         readDevices();
         return;
     }
+    // The app applies a request from its own loop (a new API's devices list then), and devices come and go.
+    if (std::chrono::steady_clock::now() - devicesRead_ > std::chrono::seconds(1)) readDevices();
 }
 
 // A new skin at 1x (live reload); a GUI at another scale loads it again at that scale.

@@ -54,7 +54,7 @@ function(hollow_add_plugin target)
   # CLAP, and through clap-wrapper VST3, AUv2 and the standalone (64-bit only, see framework/CMakeLists.txt).
   if(COMMAND make_clapfirst_plugins AND "CLAP" IN_LIST HOLLOW_FORMATS)
     add_library(${target}_clap_impl STATIC "${fw}/src/formats/clap/clap_plugin.cpp")
-    target_link_libraries(${target}_clap_impl PUBLIC ${target}_lib clap)
+    target_link_libraries(${target}_clap_impl PUBLIC ${target}_lib clap clap-wrapper-extensions)   # clapwrapper/standalone_features.h
     set(formats CLAP)
     foreach(f VST3 AUV2)
       if(f IN_LIST HOLLOW_FORMATS)

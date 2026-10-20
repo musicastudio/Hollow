@@ -576,19 +576,6 @@ void platformOpenUrl(const std::string& url) {
         ShellExecuteW(nullptr, L"open", wide(url).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
 
-// clap-wrapper's standalone window opens its settings from its system menu; the command's id is 0
-// (Menu::Identifier::AudioMidiSettings in windows_standalone.h).
-const bool kAudioSettings = true;
-void platformAudioSettings(PlatformWindow* w) {
-    PostMessageW(GetAncestor(w->hwnd, GA_ROOT), WM_SYSCOMMAND, 0, 0);
-}
-
-// A system command HollowClapWrapperFix.cmake adds to clap-wrapper, which opens the ASIO driver's panel
-// through RtAudio's ASIO SDK; it does nothing while the driver is not ASIO.
-void platformDriverPanel(PlatformWindow* w) {
-    PostMessageW(GetAncestor(w->hwnd, GA_ROOT), WM_SYSCOMMAND, 0x100, 0);
-}
-
 void platformWatchClose(PlatformWindow* w) {
     HWND root = GetAncestor(w->hwnd, GA_ROOT);
     if (!root || root == w->hwnd || w->root) return;
@@ -602,52 +589,6 @@ void platformWatchClose(PlatformWindow* w) {
 void platformCloseApp(PlatformWindow* w) {
     w->closing = true;
     PostMessageW(GetAncestor(w->hwnd, GA_ROOT), WM_CLOSE, 0, 0);
-}
-
-// The settings window clap-wrapper keeps hidden until its system menu shows it: its comboboxes and the
-// MIDI list box are children with the ids 0 to 5 (Settings::Identifier in windows_standalone.h), and a
-// change reaches its WM_COMMAND handler as the control's own notification would, so the app applies and
-// saves it as when the window is used by hand.
-static HWND settingsWindow() {
-    HWND found = nullptr;
-    EnumThreadWindows(GetCurrentThreadId(), [](HWND h, LPARAM lp) -> BOOL {
-        wchar_t t[64] = L"";
-        if (!GetWindowTextW(h, t, 64) || std::wcscmp(t, L"Audio/MIDI Settings") != 0) return TRUE;
-        *(HWND*)lp = h;
-        return FALSE;
-    }, (LPARAM)&found);
-    return found;
-}
-
-bool platformDevices(PlatformWindow*, std::vector<DeviceList>& out) {
-    HWND s = settingsWindow();
-    if (!s) return false;
-    out.assign(6, {});
-    for (int k = 0; k < 6; ++k) {
-        HWND c = GetDlgItem(s, k);
-        if (!c) return false;
-        bool list = k == 5;
-        int n = (int)SendMessageW(c, list ? LB_GETCOUNT : CB_GETCOUNT, 0, 0);
-        for (int i = 0; i < n; ++i) {
-            int len = (int)SendMessageW(c, list ? LB_GETTEXTLEN : CB_GETLBTEXTLEN, i, 0);
-            std::wstring t((size_t)std::max(len, 0) + 1, L'\0');
-            SendMessageW(c, list ? LB_GETTEXT : CB_GETLBTEXT, i, (LPARAM)&t[0]);
-            t.resize(std::wcslen(t.c_str()));
-            out[(size_t)k].items.push_back(narrow(t));
-            if (list && SendMessageW(c, LB_GETSEL, i, 0) > 0) out[(size_t)k].on.push_back(i);
-        }
-        int sel = list ? -1 : (int)SendMessageW(c, CB_GETCURSEL, 0, 0);
-        if (sel >= 0) out[(size_t)k].on.push_back(sel);
-    }
-    return true;
-}
-
-void platformSetDevice(PlatformWindow*, int list, int item) {
-    HWND s = settingsWindow(), c = s ? GetDlgItem(s, list) : nullptr;
-    if (!c) return;
-    if (list == 5) SendMessageW(c, LB_SETSEL, SendMessageW(c, LB_GETSEL, item, 0) > 0 ? FALSE : TRUE, item);
-    else if (SendMessageW(c, CB_SETCURSEL, item, 0) == CB_ERR) return;
-    SendMessageW(s, WM_COMMAND, MAKEWPARAM(list, list == 5 ? LBN_SELCHANGE : CBN_SELCHANGE), (LPARAM)c);
 }
 
 // The common dialogs: a filter of "Name (*.a;*.b)" then "*.a;*.b" per type, a save's extension the first type's first.

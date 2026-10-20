@@ -182,6 +182,12 @@ enum Key { KeyNone, KeyLeft, KeyRight, KeyUp, KeyDown, KeyHome, KeyEnd, KeyBacks
 void keyLog(const char* fmt, ...);
 bool keyLogOn();
 
+// One of the standalone's audio and MIDI settings, for a modal of the skin's: its items and the chosen ones.
+struct DeviceList {
+    std::vector<std::string> items;
+    std::vector<int> on;
+};
+
 class Editor {
 public:
     // Implemented by the format layer; called on the GUI thread, for host params only.
@@ -193,6 +199,13 @@ public:
         virtual bool resize(int width, int height) { (void)width; (void)height; return false; }
         // True in the standalone app, whose audio and MIDI settings a skin's "standalone" action opens.
         virtual bool standalone() const { return false; }
+        // The standalone's audio and MIDI setup: six lists, the audio API, output, input, sample rate and
+        // buffer size (each one choice) and the MIDI inputs (any of them). False where the host has none.
+        virtual bool devices(std::vector<DeviceList>& out) { (void)out; return false; }
+        // Picks an item of one of those lists; for the MIDI inputs it opens or closes that one.
+        virtual void setDevice(int list, int item) { (void)list; (void)item; }
+        // The standalone's own audio and MIDI settings window, where it has one.
+        virtual bool showDevices() { return false; }
     };
 
     Editor(std::shared_ptr<Skin> skin, State& state, Host& host);

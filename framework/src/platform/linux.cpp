@@ -334,12 +334,6 @@ void platformOpenUrl(const std::string& url) {
     if (url.compare(0, 7, "http://") == 0 || url.compare(0, 8, "https://") == 0) spawn({"xdg-open", url}, nullptr);
 }
 
-// clap-wrapper's Linux standalone has no settings window.
-const bool kAudioSettings = false;
-void platformAudioSettings(PlatformWindow*) {}
-void platformDriverPanel(PlatformWindow*) {}
-bool platformDevices(PlatformWindow*, std::vector<DeviceList>&) { return false; }
-void platformSetDevice(PlatformWindow*, int, int) {}
 void platformWatchClose(PlatformWindow*) {}
 void platformCloseApp(PlatformWindow*) {}
 PlatformWindow* platformPopup(PlatformWindow*, Gui*) { return nullptr; }   // none yet: the editor grows around the modal

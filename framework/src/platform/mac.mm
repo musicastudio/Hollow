@@ -310,15 +310,7 @@ void platformOpenUrl(const std::string& url) {
     if (u) [[NSWorkspace sharedWorkspace] openURL:u];
 }
 
-// clap-wrapper's standalone app delegate answers its Audio Settings menu item with this action.
-const bool kAudioSettings = true;
-void platformAudioSettings(PlatformWindow*) {
-    [NSApp sendAction:NSSelectorFromString(@"openAudioSettingsWindow:") to:nil from:nil];
-}
-void platformDriverPanel(PlatformWindow*) {}
-// Shortcut: the settings stay in the app's own window, and closing does not ask; Windows has both.
-bool platformDevices(PlatformWindow*, std::vector<DeviceList>&) { return false; }
-void platformSetDevice(PlatformWindow*, int, int) {}
+// Shortcut: closing does not ask; Windows does.
 void platformWatchClose(PlatformWindow*) {}
 void platformCloseApp(PlatformWindow*) {}
 PlatformWindow* platformPopup(PlatformWindow*, Gui*) { return nullptr; }   // none yet: the editor grows around the modal
