@@ -33,6 +33,7 @@ struct State::Impl {
     std::atomic<int> ccs[128], ccMap[128];   // last value (-1 = never), assigned param (-1 = none)
     std::atomic<unsigned> midiCount{0};
     std::atomic<double> cpu{0};
+    double busy = 0, audio = 0;         // addLoad's sums since cpu was last published (audio thread only)
     std::atomic<bool> modified{true};   // a fresh instance has never been saved or loaded, so it starts modified
     std::atomic<unsigned> loads{0};
     std::atomic<float> peaks[2] = {};
@@ -222,6 +223,18 @@ void State::midiIn(const uint8_t* b, int count) {
 }
 
 void State::setLoad(double fraction) { impl_->cpu.store(fraction, std::memory_order_relaxed); }
+
+// Busy time over the audio it made, published twice a second. One block's ratio swings with how much of the
+// product's own work it happens to hold and with what it waited for, so a readout of it changed at the GUI's
+// 30 Hz and could not be read.
+void State::addLoad(double busy, double audio) {
+    Impl& m = *impl_;
+    m.busy += busy;
+    m.audio += audio;
+    if (m.audio < 0.5) return;
+    m.cpu.store(m.busy / m.audio, std::memory_order_relaxed);
+    m.busy = m.audio = 0;
+}
 void State::setVoices(int voices) { impl_->voices.store(voices, std::memory_order_relaxed); }
 bool State::noteHeld(int note) const { return note >= 0 && note < 128 && impl_->held[note].load(std::memory_order_relaxed); }
 int State::pitchBend() const { return impl_->bend.load(std::memory_order_relaxed); }

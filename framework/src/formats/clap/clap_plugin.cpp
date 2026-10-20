@@ -64,7 +64,7 @@ struct Plugin final : Editor::Host {
     std::atomic<bool> processing{false};
     const clap_output_events_t* midiOut = nullptr;   // the current process() call's output, for Processor::sendMidi
     int midiFrames = 0;                              // and its length; events are kept inside it
-    double rate = 44100;                             // from activate, for State::setLoad
+    double rate = 44100;                             // from activate, for State::addLoad
     std::atomic<bool> rescan{false};                 // Processor::paramsChanged, served on the main thread
     // The host hears once per change since the last save or load that the instance is modified, so it saves
     // the instance with the project: 0 clean, 1 asked for the main thread, 2 told. A change the processor makes
@@ -223,9 +223,8 @@ struct Plugin final : Editor::Host {
             state->peak(pk[0], chans > 1 ? pk[1] : pk[0]);
         }
         midiOut = nullptr;
-        if (p->frames_count)
-            state->setLoad(std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() * rate / p->frames_count);
         checkDirty();
+        if (p->frames_count) state->addLoad(std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(), p->frames_count / rate);
         return CLAP_PROCESS_CONTINUE;
     }
 

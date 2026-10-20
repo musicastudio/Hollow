@@ -394,7 +394,7 @@ HRESULT Dxi::render(IMediaSample* in) {
 
 // The VST2 layer does the State bookkeeping for each chunk: MIDI played on the editor goes to the
 // processor ahead of the chunk's own events, those events go through State::midiIn, and
-// processReplacing reports State::setLoad.
+// processReplacing reports State::addLoad.
 void Dxi::renderFrames(BYTE* dst, long n) {
     const int ch = m_fmt.ch;
     for (long done = 0; done < n;) {

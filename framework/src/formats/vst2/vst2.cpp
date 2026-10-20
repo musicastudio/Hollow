@@ -252,7 +252,7 @@ Effect::Effect(AudioMasterCallback m) : master(m) {
             s->outList.numEvents = 0;
             s->sysexUsed = 0;
         }
-        if (n > 0) s->state->setLoad(std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() * s->rate / n);
+        if (n > 0) s->state->addLoad(std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(), n / s->rate);
     };
     if (info.midiOut) {
         outEvents.resize(kMaxOut);

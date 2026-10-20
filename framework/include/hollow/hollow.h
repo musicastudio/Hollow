@@ -96,9 +96,10 @@ public:
     bool popMidi(uint8_t bytes[3], int& size);
 
     // What the audio side knows and the GUI shows. The format layer calls midiIn for every incoming
-    // MIDI message and setLoad once per block (audio thread); a Processor may call setVoices.
+    // MIDI message and addLoad once per block (audio thread); a Processor may call setVoices.
     void midiIn(const uint8_t* bytes, int size);   // key and wheel display, MIDI learn, assigned CCs
-    void setLoad(double fraction);                 // time spent in process() / block duration
+    void setLoad(double fraction);                 // time spent in process() / block duration, shown as it is
+    void addLoad(double busy, double audio);       // seconds in process() and of audio made: load() is their ratio over half a second
     void setVoices(int voices);
     bool noteHeld(int note) const;                  // from a note on to its note off; a sustain pedal is not followed
     int pitchBend() const;                          // -8192..8191
