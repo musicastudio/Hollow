@@ -336,6 +336,7 @@ public:
     std::string closeModal;                        // skin.json "close": the standalone's close asks this modal
     Cond closeIf;                                  // first, while this holds
     std::string settingsView;                      // skin.json "standalone": its audio and MIDI settings as a modal
+    int icon = -1;                                 // and the app window's icon, where the platform sets one (Linux)
     std::vector<Binding> keys;                     // skin.json "keys": keyboard shortcuts, in the order given
     // skin.json "steppers": a number drawn on one of these plates gets a down button at its left end and an
     // up button at its right, each `width` px wide; the images are two tiles, at rest and held.

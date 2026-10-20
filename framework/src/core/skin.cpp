@@ -1074,6 +1074,7 @@ std::shared_ptr<Skin> loadFiles(std::shared_ptr<const Files> all, std::string* e
     skin->closeModal = sj["close"]["modal"].str();
     skin->closeIf = Loader::cond(sj["close"]["if"]);
     skin->settingsView = sj["standalone"]["settings"].str();
+    skin->icon = ld.image(sj["standalone"]["icon"].str());
     // "steppers": { "width": 9, "plates": { "<plate image>": ["<down image>", "<up image>"], ... } }
     if (const Json& st = sj["steppers"]; st.type == Json::Object) {
         int width = std::max(1, ld.px(st["width"].num(9)));

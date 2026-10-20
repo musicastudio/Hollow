@@ -5,6 +5,7 @@
 // the few calls it makes from the host's thread.
 #include "../core/core.h"
 #include <X11/Xlib.h>
+#include <X11/Xatom.h>
 #include <X11/Xutil.h>
 #include <X11/keysym.h>
 #include <atomic>
@@ -31,6 +32,7 @@ struct PlatformWindow {
     Window win = 0;
     Window parent = None;              // the host's window: keys the editor does not use go back to it
     bool tookFocus = false;            // the keyboard was taken once the window was mapped
+    std::atomic<int> focusWant{0};     // platformFocus from another thread, for this one: 1 take, 2 hand back
     GC gc = nullptr;
     XImage* img = nullptr;
     std::vector<uint32_t> frame;       // the canvas at the window's scale, what img points at
@@ -209,9 +211,44 @@ static void run(PlatformWindow* w) {
             w->wantW = w->wantH = 0;
         }
         if (ww > 0 && wh > 0) XResizeWindow(w->dpy, w->win, (unsigned)ww, (unsigned)wh);
+        if (int f = w->focusWant.exchange(0)) platformFocus(w, f == 1);
         if (!r.empty()) present(w, r);
         XFlush(w->dpy);
     }
+}
+
+// The standalone's top window, the app's own above the editor (the one the window manager marked with WM_STATE,
+// else the highest below the root): WM_CLASS the product id, which the installer's menu entry names as its
+// StartupWMClass, and the skin's icon as _NET_WM_ICON, so a dock shows the product's icon whether or not it
+// was installed.
+static void nameApp(PlatformWindow* w) {
+    const Atom wmState = XInternAtom(w->dpy, "WM_STATE", False);
+    Window top = w->parent, root = None, up = None, *kids = nullptr;
+    unsigned n = 0;
+    for (;;) {
+        Atom type = None;
+        int format = 0;
+        unsigned long items = 0, left = 0;
+        unsigned char* prop = nullptr;
+        XGetWindowProperty(w->dpy, top, wmState, 0, 0, False, AnyPropertyType, &type, &format, &items, &left, &prop);
+        if (prop) XFree(prop);
+        if (type != None || !XQueryTree(w->dpy, top, &root, &up, &kids, &n)) break;
+        if (kids) XFree(kids);
+        if (up == root || up == None) break;
+        top = up;
+    }
+    std::string id = pluginInfo().id;
+    XClassHint hint{&id[0], &id[0]};
+    XSetClassHint(w->dpy, top, &hint);
+    const Skin& sk = w->gui->skin();
+    if (sk.icon < 0) return;
+    const Image& im = sk.images[(size_t)sk.icon];
+    const Rect t = im.tile(0);
+    std::vector<unsigned long> data{(unsigned long)t.w, (unsigned long)t.h};   // format 32 travels as longs
+    for (int y = t.y; y < t.y + t.h; ++y)
+        for (int x = t.x; x < t.x + t.w; ++x) data.push_back(im.px[(size_t)y * im.w + (size_t)x]);   // ARGB, as the property wants
+    XChangeProperty(w->dpy, top, XInternAtom(w->dpy, "_NET_WM_ICON", False), XA_CARDINAL, 32, PropModeReplace,
+                    (const unsigned char*)data.data(), (int)data.size());
 }
 
 PlatformWindow* platformOpen(void* parent, Gui* gui) {
@@ -233,6 +270,7 @@ PlatformWindow* platformOpen(void* parent, Gui* gui) {
     w->win = XCreateWindow(w->dpy, host, 0, 0, (unsigned)(gui->width() * gui->scale()), (unsigned)(gui->height() * gui->scale()), 0,
                            CopyFromParent, InputOutput, CopyFromParent, CWEventMask | CWBackPixel, &a);
     w->gc = XCreateGC(w->dpy, w->win, 0, nullptr);
+    if (parent && gui->standalone()) nameApp(w);
     XMapWindow(w->dpy, w->win);
     XFlush(w->dpy);
     w->thread = std::thread(run, w);
@@ -285,8 +323,24 @@ int platformMenu(PlatformWindow*, const std::vector<MenuEntry>&, int, int) { ret
 
 void platformTip(PlatformWindow*, const std::string&) {}   // skinned tooltips only, as for menus
 
+// The keyboard goes back to the host's window, whose ancestors then take keys as they did before the editor
+// had them. Xlib on this Display is the window's own thread's alone, so a call from elsewhere waits for it.
+// Shortcut: not the window that held the keyboard before, as Windows does, since X11 cannot check that one
+// is still there and viewable without an error handler, and an error handler is the whole process's.
 void platformFocus(PlatformWindow* w, bool on) {
-    if (on) XSetInputFocus(w->dpy, w->win, RevertToParent, CurrentTime);   // only ever called on the window's own thread
+    if (std::this_thread::get_id() != w->thread.get_id()) {
+        w->focusWant = on ? 1 : 2;
+        poke(w);
+        return;
+    }
+    if (on) {
+        XSetInputFocus(w->dpy, w->win, RevertToParent, CurrentTime);
+        return;
+    }
+    Window f = None;
+    int revert = 0;
+    XGetInputFocus(w->dpy, &f, &revert);
+    if (f == w->win && w->parent != None) XSetInputFocus(w->dpy, w->parent, RevertToParent, CurrentTime);
 }
 
 // Runs a program with arguments, no shell, collecting its standard output into out when given. Its exit
