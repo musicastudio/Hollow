@@ -1791,8 +1791,10 @@ void Gui::rightUp(int x, int y, bool shift) {
     if (w.kind == Kind::Custom && w.ops && w.ops->right) w.ops->right(*this, h, rectOf(*h.node, h.i), x, y, shift, true);
     else if (w.kind == Kind::List && w.json.has("contextRow")) {   // the row it is for, as text data, then its menu
         int row = listRowAt(h, y);
-        if (row < 0) return;
-        const std::vector<std::string> cells = listModel(*h.node, h.i)[(size_t)row].cells;
+        // The model is built again here, and the processor may have shortened the list since the rows were counted.
+        const auto model = listModel(*h.node, h.i);
+        if (row < 0 || (size_t)row >= model.size()) return;
+        const std::vector<std::string> cells = model[(size_t)row].cells;
         std::string v = std::to_string(row);
         for (auto& c : cells) v += "\t" + c;
         state_.setData(subst(*h.node, w.json["contextRow"].str()), v);
