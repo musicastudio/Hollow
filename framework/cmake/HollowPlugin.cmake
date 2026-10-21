@@ -102,6 +102,10 @@ function(hollow_add_plugin target)
         endif()
       endforeach()
     endif()
+    # Windows 7: the standalone's Windows 10 DPI calls, with fallbacks (standalone_win7.cpp).
+    if(WIN32 AND TARGET ${target}_standalone)
+      target_sources(${target}_standalone PRIVATE "${fw}/src/formats/clap/standalone_win7.cpp")
+    endif()
   endif()
 
   if("VST2" IN_LIST HOLLOW_FORMATS)   # with the DXi on 32-bit Windows, a .vst bundle on macOS
