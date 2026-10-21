@@ -23,6 +23,8 @@ namespace hollow {
 // The tool reads a folder; it has no embedded skin.
 const EmbeddedFile kSkinFiles[] = {{"", nullptr, 0}};
 const size_t kSkinFileCount = 0;
+// No product either: the Linux window code names the standalone's window by it, which a tool never opens.
+const Info& pluginInfo() { static const Info i{"", "", "", "", "", ""}; return i; }
 }
 
 int main(int argc, char** argv) {
