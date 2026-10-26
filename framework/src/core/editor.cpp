@@ -1699,11 +1699,11 @@ void Gui::mouseDown(int x, int y, bool right, bool dbl, bool shift) {
         [[fallthrough]];
     case Kind::Dial:
         begin(h);
-        if (dbl) {   // "reset": the default, 0 when the range spans 0, or nothing
+        if (dbl) {   // "reset": the default, 0 when the range holds 0, or nothing
             int p = inst(h).param;
             double lo = p >= 0 ? state_.def(p).min : w.rangeMin, hi = p >= 0 ? state_.def(p).max : w.rangeMax;
             if (w.reset == Widget::ResetDefault) setPlain(h, defaultOf(h));
-            else if (w.reset == Widget::ResetZero && std::min(lo, hi) < 0 && std::max(lo, hi) > 0) setPlain(h, 0);
+            else if (w.reset == Widget::ResetZero && std::min(lo, hi) <= 0 && std::max(lo, hi) >= 0) setPlain(h, 0);
             end();
             break;
         }

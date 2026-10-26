@@ -271,7 +271,7 @@ Further `menu` fields:
 
 ### Number and text details
 
-- `number` field `"reset"`: `"default"` (double-click resets to the default when not editable), `"zero"` (resets to 0 when the range spans 0, else nothing) or `false` (nothing). `dial` takes the same field (default `"default"`).
+- `number` field `"reset"`: `"default"` (double-click resets to the default when not editable), `"zero"` (resets to 0 when the range holds 0, as a level from 0 to 99 does, else nothing) or `false` (nothing). `dial` takes the same field (default `"default"`).
 - `dial` and `number` field `"wheel"`: the fraction of the range one wheel notch moves (0 disables the wheel; default 0.05 for dials, 0 for numbers). A stepped param accumulates the fraction and snaps to the nearest step. Shift multiplies it by `fine`.
 - `textbox` field `"editOn": "click"` opens editing on a single click (default `"double"`).
 - Caret and selection colours per font: `skin.json` `"fonts": { "<font>": { "caret": "#...", "selection": "#..." } }`; the caret blinks every 600 ms.
